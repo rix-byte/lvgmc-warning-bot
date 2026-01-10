@@ -114,8 +114,8 @@ def main():
                 email_body,
             )
 
-            if level == "red":
-                send_sms(format_sms(info))
+            if level in ("red", "orange"):
+    send_sms(format_sms(info))
 
             seen[alert["identifier"]] = fid
 
