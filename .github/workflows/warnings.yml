@@ -5,6 +5,9 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -12,6 +15,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -33,16 +38,15 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
 
-          # -------- SMS (Twilio) --------
-          TWILIO_SID: ${{ secrets.TWILIO_SID }}
-          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
-          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
-          TWILIO_TO: ${{ secrets.TWILIO_TO }}
+          # -------- Meta WhatsApp --------
+          META_WA_TOKEN: ${{ secrets.META_WA_TOKEN }}
+          META_WA_PHONE_ID: ${{ secrets.META_WA_PHONE_ID }}
+          META_WA_TEMPLATE_NAME: ${{ secrets.META_WA_TEMPLATE_NAME }}
+          META_WA_TO: ${{ secrets.META_WA_TO }}
 
-          # -------- SMS behavior toggle --------
-          # Default (if secret missing): "red"
-          # For testing: set secret SMS_LEVELS = "red,orange"
-          SMS_LEVELS: ${{ secrets.SMS_LEVELS }}
+          # -------- Behavior toggles --------
+          WA_LEVELS: orange,red
+          SUPPRESS_MARINE: "true"
         run: python watch_warnings.py
 
       - name: Save state
@@ -51,4 +55,5 @@ jobs:
           git config user.email "warning-bot@users.noreply.github.com"
           git add state.json || true
           git commit -m "Update warning state" || true
+          git pull --rebase || true
           git push || true
