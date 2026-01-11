@@ -5,6 +5,7 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+# 🔴 THIS IS CRITICAL — allows saving state.json
 permissions:
   contents: write
 
@@ -16,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # required so push works reliably
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,7 +45,7 @@ jobs:
           META_WA_TEMPLATE_NAME: ${{ secrets.META_WA_TEMPLATE_NAME }}
           META_WA_TO: ${{ secrets.META_WA_TO }}
 
-          # -------- Behavior toggles --------
+          # -------- Behavior --------
           WA_LEVELS: orange,red
           SUPPRESS_MARINE: "true"
         run: python watch_warnings.py
