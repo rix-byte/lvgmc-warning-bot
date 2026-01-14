@@ -27,7 +27,7 @@ META_WA_TO = os.getenv("META_WA_TO", "")  # +371...
 
 # ---------------- Behavior toggles ----------------
 # Escalate WhatsApp for these levels (default: orange+red)
-WA_LEVELS = os.getenv("WA_LEVELS", "orange,red").lower()
+WA_LEVELS = os.getenv("WA_LEVELS", "yellow,orange,red").lower()
 
 # Suppress sea-only warnings
 SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes", "on")
