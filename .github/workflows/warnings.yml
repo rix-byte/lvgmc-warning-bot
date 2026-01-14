@@ -46,7 +46,7 @@ jobs:
           META_WA_TO: ${{ secrets.META_WA_TO }}
 
           # -------- Behavior --------
-          WA_LEVELS: orange,red
+          WA_LEVELS: yellow,orange,red
           SUPPRESS_MARINE: "true"
         run: python watch_warnings.py
 
