@@ -44,6 +44,7 @@ jobs:
           META_WA_PHONE_ID: ${{ secrets.META_WA_PHONE_ID }}
           META_WA_TEMPLATE_NAME: ${{ secrets.META_WA_TEMPLATE_NAME }}
           META_WA_TO: ${{ secrets.META_WA_TO }}
+          META_WA_LANG: ${{ secrets.META_WA_LANG }}
 
           # -------- Behavior --------
           WA_LEVELS: yellow,orange,red
