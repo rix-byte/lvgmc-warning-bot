@@ -120,8 +120,16 @@ def meta_whatsapp_send_template(level: str, hazard: str, area: str, onset: str, 
     Template body must have variables:
       {{1}} level, {{2}} hazard, {{3}} area, {{4}} onset, {{5}} expires
     """
+
     if not all([META_WA_TOKEN, META_WA_PHONE_ID, META_WA_TEMPLATE_NAME, META_WA_TO]):
         raise RuntimeError("Missing META_WA_* secrets needed for WhatsApp escalation.")
+
+    # IMPORTANT: language must match the template language you created in WhatsApp Manager
+    # Set this via GitHub secret META_WA_LANG, e.g. "lv" or "en_US"
+    meta_lang = os.getenv("META_WA_LANG", "en_US")
+
+    # Meta expects recipient number in international format digits only, no '+' and no spaces
+    to_digits = "".join(ch for ch in META_WA_TO if ch.isdigit())
 
     url = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
     headers = {
@@ -131,11 +139,11 @@ def meta_whatsapp_send_template(level: str, hazard: str, area: str, onset: str, 
 
     payload = {
         "messaging_product": "whatsapp",
-        "to": META_WA_TO.lstrip("+"),  # Meta expects digits only in many examples; works reliably this way
+        "to": to_digits,
         "type": "template",
         "template": {
             "name": META_WA_TEMPLATE_NAME,
-            "language": {"code": "en_US"},
+            "language": {"code": meta_lang},
             "components": [
                 {
                     "type": "body",
@@ -152,6 +160,11 @@ def meta_whatsapp_send_template(level: str, hazard: str, area: str, onset: str, 
     }
 
     r = requests.post(url, headers=headers, json=payload, timeout=30)
+
+    # If Meta rejects it, print the full response so you can see the real error message in Actions logs
+    if r.status_code >= 400:
+        print("Meta WA error status:", r.status_code)
+        print("Meta WA error body:", r.text)
     r.raise_for_status()
 
 def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
