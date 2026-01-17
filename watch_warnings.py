@@ -5,14 +5,14 @@ import time
 from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 FEED_URL = "https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/"
 STATE_FILE = "state.json"
 
-# ================= Email =================
+# ---------------- Email (required) ----------------
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
@@ -20,33 +20,35 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", EMAIL_TO)
 
-# ================= Meta WhatsApp =================
-META_WA_TOKEN = os.getenv("META_WA_TOKEN", "")
-META_WA_PHONE_ID = os.getenv("META_WA_PHONE_ID", "")
-META_WA_TEMPLATE_NAME = os.getenv("META_WA_TEMPLATE_NAME", "")
-META_WA_LANG = os.getenv("META_WA_LANG", "en_US")
-META_WA_TO = os.getenv("META_WA_TO", "")
+# ---------------- Telegram (required for mobile alerts) ----------------
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # numeric string
 
-# ================= Behavior =================
-WA_LEVELS = os.getenv("WA_LEVELS", "orange,red").lower()
-SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes")
+# ---------------- Behavior toggles ----------------
+# Telegram escalation levels (default: orange+red). For testing: yellow,orange,red
+TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()
+
+# Suppress sea-only warnings
+SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes", "on")
 
 MARINE_KEYWORDS = [
-    "jūra", "juras", "jūrā", "jūrās",
-    "baltijas jūra", "baltijas juras",
-    "sea", "offshore"
+    "baltijas jūra", "baltijas juras", "jūra", "juras", "jūrā", "jūrās",
+    "atklātā jūra", "atklata jura",
+    "akvatorija", "akvatōrija",
+    "sea",
 ]
 
-# ================= Utilities =================
-def fetch_feed() -> Optional[dict]:
-    for attempt in range(5):
+def fetch_feed_json(url: str) -> Optional[dict]:
+    last_err = None
+    for attempt in range(1, 6):
         try:
-            r = requests.get(FEED_URL, timeout=30)
+            r = requests.get(url, timeout=30, headers={"User-Agent": "lvgmc-warning-bot/telegram"})
             r.raise_for_status()
             return r.json()
         except Exception as e:
-            print(f"Feed fetch failed (attempt {attempt+1}): {e}")
-            time.sleep(min(2 ** attempt, 15))
+            last_err = e
+            time.sleep(min(2 ** attempt, 16))
+    print(f"WARNING: feed fetch failed after retries: {last_err}")
     return None
 
 def load_state() -> Dict[str, Any]:
@@ -62,134 +64,168 @@ def save_state(state: Dict[str, Any]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def fingerprint(info: Dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(info, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+def pick_lv_info(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for info in alert.get("info", []) or []:
+        if info.get("language") == "lv":
+            return info
+    return None
+
+def parse_level(info: Dict[str, Any]) -> str:
+    for p in info.get("parameter", []) or []:
+        if p.get("valueName") == "awareness_level":
+            parts = [x.strip() for x in (p.get("value") or "").split(";")]
+            if len(parts) >= 2:
+                return parts[1].lower()
+    return ""
+
+def parse_hazard(info: Dict[str, Any]) -> str:
+    for p in info.get("parameter", []) or []:
+        if p.get("valueName") == "awareness_type":
+            parts = [x.strip() for x in (p.get("value") or "").split(";")]
+            if len(parts) >= 2:
+                return parts[1]
+    return ""
+
+def areas_from_info(info: Dict[str, Any]) -> List[str]:
+    return [a.get("areaDesc", "").strip() for a in (info.get("area", []) or []) if a.get("areaDesc")]
+
+def is_marine_only(info: Dict[str, Any]) -> bool:
+    areas = areas_from_info(info)
+    if not areas:
+        return False
+
+    def looks_marine(text: str) -> bool:
+        t = text.lower()
+        return any(k in t for k in MARINE_KEYWORDS)
+
+    return all(looks_marine(a) for a in areas)
+
+def fingerprint_info(info: Dict[str, Any]) -> str:
+    payload = json.dumps(info, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 def send_email(subject: str, body: str) -> None:
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
-        print("Email not configured, skipping email send.")
-        return
+        raise RuntimeError("Missing SMTP_* / EMAIL_* secrets for email.")
 
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.starttls()
         s.login(SMTP_USER, SMTP_PASS)
         s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
 
-def meta_whatsapp_send(level, hazard, area, onset, expires):
-    if not all([META_WA_TOKEN, META_WA_PHONE_ID, META_WA_TEMPLATE_NAME, META_WA_TO]):
-        print("Meta WhatsApp not fully configured, skipping.")
+def telegram_send(text: str) -> None:
+    # Non-blocking: log errors but keep run alive so state saves
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        print("Telegram not configured (missing TG_BOT_TOKEN/TG_CHAT_ID), skipping.")
         return
-
-    to_digits = "".join(c for c in META_WA_TO if c.isdigit())
-    url = f"https://graph.facebook.com/v20.0/{META_WA_PHONE_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {META_WA_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_digits,
-        "type": "template",
-        "template": {
-            "name": META_WA_TEMPLATE_NAME,
-            "language": {"code": META_WA_LANG},
-            "components": [{
-                "type": "body",
-                "parameters": [
-                    {"type": "text", "text": level.upper()},
-                    {"type": "text", "text": hazard or "-"},
-                    {"type": "text", "text": area or "-"},
-                    {"type": "text", "text": onset or "-"},
-                    {"type": "text", "text": expires or "-"},
-                ]
-            }]
-        }
-    }
-
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TG_CHAT_ID, "text": text, "disable_web_page_preview": True}
+        r = requests.post(url, json=payload, timeout=30)
         if r.status_code >= 400:
-            print("Meta WA error:", r.status_code, r.text)
+            print("Telegram error status:", r.status_code)
+            print("Telegram error body:", r.text)
     except Exception as e:
-        print("Meta WA exception:", e)
+        print("Telegram send exception:", e)
 
-# ================= Main =================
-def main():
+def should_escalate_telegram(level: str) -> bool:
+    allowed = {x.strip() for x in TG_LEVELS.split(",") if x.strip()}
+    return level.lower() in allowed
+
+def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
+    title = info.get("event") or "LVĢMC brīdinājums"
+    onset = info.get("onset") or info.get("effective") or "(nav)"
+    expires = info.get("expires") or "(nav)"
+    areas = ", ".join(areas_from_info(info)) or "(nav norādīts)"
+    desc = (info.get("description") or "").strip()
+    web = info.get("web") or "https://bridinajumi.meteo.lv/"
+
+    hdr = f"⚠️ {title} [{(level or 'N/A').upper()}{(' — ' + hazard) if hazard else ''}]"
+    return "\n".join([
+        hdr,
+        f"Teritorija: {areas}",
+        f"Spēkā: {onset} → {expires}",
+        "",
+        desc,
+        "",
+        f"Avots: {web}",
+    ]).strip()
+
+def format_grouped_email(changed_blocks: List[str]) -> Tuple[str, str]:
+    subject = f"LVĢMC brīdinājumu izmaiņas: {len(changed_blocks)}"
+    body = "\n\n---\n\n".join(changed_blocks)
+    return subject, body
+
+def format_telegram_alert(info: Dict[str, Any], level: str, hazard: str) -> str:
+    title = info.get("event") or "LVĢMC brīdinājums"
+    onset = info.get("onset") or info.get("effective") or "-"
+    expires = info.get("expires") or "-"
+    areas = ", ".join(areas_from_info(info)) or "-"
+    return (
+        f"⚠️ LVĢMC ALERT ({level.upper() if level else 'N/A'})\n"
+        f"{title}\n"
+        f"Tips: {hazard or '-'}\n"
+        f"Teritorija: {areas}\n"
+        f"Spēkā: {onset} → {expires}"
+    )
+
+def main() -> None:
     state = load_state()
-    seen = state.get("seen", {})
+    seen: Dict[str, str] = state.get("seen", {})
 
-    data = fetch_feed()
-    if not data:
-        print("Feed unavailable, exiting cleanly.")
-        save_state(state)
+    data = fetch_feed_json(FEED_URL)
+    if data is None:
+        # feed down: keep state, exit cleanly
         return
 
-    changed = []
-    wa_levels = {l.strip() for l in WA_LEVELS.split(",") if l.strip()}
+    changed_blocks: List[str] = []
+    tg_alerts: List[str] = []
 
-    for w in data.get("warnings", []):
-        alert = w.get("alert", {})
+    for w in data.get("warnings", []) or []:
+        alert = w.get("alert") or {}
         identifier = alert.get("identifier")
         if not identifier:
             continue
 
-        info = next((i for i in alert.get("info", []) if i.get("language") == "lv"), None)
+        info = pick_lv_info(alert)
         if not info:
             continue
 
-        areas = [a.get("areaDesc", "") for a in info.get("area", [])]
-        if SUPPRESS_MARINE and areas and all(any(k in a.lower() for k in MARINE_KEYWORDS) for a in areas):
+        if SUPPRESS_MARINE and is_marine_only(info):
             continue
 
-        level = ""
-        hazard = ""
-        for p in info.get("parameter", []):
-            if p.get("valueName") == "awareness_level":
-                level = p.get("value", "").split(";")[-1].lower()
-            if p.get("valueName") == "awareness_type":
-                hazard = p.get("value", "").split(";")[-1]
+        level = parse_level(info)
+        hazard = parse_hazard(info)
+        fp = fingerprint_info(info)
+        prev_fp = seen.get(identifier)
 
-        fp = fingerprint(info)
-        if seen.get(identifier) == fp:
-            continue
+        if prev_fp != fp:
+            changed_blocks.append(format_warning_block(info, level, hazard))
 
-        seen[identifier] = fp
+            if should_escalate_telegram(level):
+                tg_alerts.append(format_telegram_alert(info, level, hazard))
 
-        onset = info.get("onset", "-")
-        expires = info.get("expires", "-")
-        area_txt = ", ".join(areas) or "-"
+            seen[identifier] = fp
 
-        changed.append(
-            f"⚠️ {info.get('event','Brīdinājums')}\n"
-            f"Līmenis: {level.upper()}\n"
-            f"Tips: {hazard}\n"
-            f"Teritorija: {area_txt}\n"
-            f"Spēkā: {onset} → {expires}\n\n"
-            f"{info.get('description','')}"
-        )
+    # One email per run if there are changes
+    if changed_blocks:
+        subject, body = format_grouped_email(changed_blocks)
+        send_email(subject, body)
 
-        if level in wa_levels:
-            meta_whatsapp_send(level, hazard, area_txt, onset, expires)
-
-    if changed:
-        send_email(
-            f"LVĢMC brīdinājumu izmaiņas: {len(changed)}",
-            "\n\n---\n\n".join(changed)
-        )
+    # Telegram escalation (non-blocking)
+    for msg in tg_alerts:
+        telegram_send(msg)
 
     state["seen"] = seen
     state["updated_at"] = datetime.utcnow().isoformat() + "Z"
     save_state(state)
 
-    print("Run completed successfully.")
+    print(f"Done. Changed warnings emailed: {len(changed_blocks)}. Telegram alerts sent: {len(tg_alerts)}.")
 
 if __name__ == "__main__":
     main()
