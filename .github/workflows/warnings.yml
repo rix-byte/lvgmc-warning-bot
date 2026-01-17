@@ -45,11 +45,9 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
 
           # -------- Meta WhatsApp --------
-          META_WA_TOKEN: ${{ secrets.META_WA_TOKEN }}
-          META_WA_PHONE_ID: ${{ secrets.META_WA_PHONE_ID }}
-          META_WA_TEMPLATE_NAME: ${{ secrets.META_WA_TEMPLATE_NAME }}
-          META_WA_LANG: ${{ secrets.META_WA_LANG }}
-          META_WA_TO: ${{ secrets.META_WA_TO }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+TG_LEVELS: ${{ secrets.TG_LEVELS }}
 
           # -------- Behavior toggles --------
           # If these secrets don't exist, your script should have defaults.
