@@ -392,7 +392,7 @@ def write_history_html() -> None:
       r.style.display = ok ? "" : "none";
       if (ok) shown++;
     }}
-    document.getElementById("count").innerText = `Rādīti ieraksti: ${shown} / ${rows.length}`;
+    document.getElementById("count").innerText = `Rādīti ieraksti: ${{shown} / ${rows.length}}`;
   }}
 
   let sortDir = 1;
