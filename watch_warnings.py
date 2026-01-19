@@ -25,19 +25,17 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", EMAIL_TO)
 
-# ---------------- Telegram (recommended for mobile alerts) ----------------
+# ---------------- Telegram ----------------
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # numeric string
-TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()  # for testing: yellow,orange,red
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
+TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()
 
-# ---------------- Behavior toggles ----------------
+# ---------------- Behavior ----------------
 SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes", "on")
 
 MARINE_KEYWORDS = [
     "baltijas jūra", "baltijas juras", "jūra", "juras", "jūrā", "jūrās",
-    "atklātā jūra", "atklata jura",
-    "akvatorija", "akvatōrija",
-    "sea",
+    "atklātā jūra", "atklata jura", "akvatorija", "akvatōrija", "sea",
 ]
 
 HISTORY_FIELDS = [
@@ -61,7 +59,65 @@ LEVEL_TO_BADGE = {
     "": ("—", "gray"),
 }
 
-# ---------------- Utilities ----------------
+
+# ---------------- Robust IO ----------------
+
+def load_state() -> Dict[str, Any]:
+    """
+    Always return a valid structure:
+      {"seen": {...}, "updated_at": "..."}
+    """
+    state: Dict[str, Any] = {"seen": {}}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                # merge/normalize
+                state["seen"] = raw.get("seen") if isinstance(raw.get("seen"), dict) else {}
+                # keep anything else if you want
+        except Exception:
+            pass
+    return state
+
+
+def save_state(state: Dict[str, Any]) -> None:
+    state["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    # Ensure schema
+    if "seen" not in state or not isinstance(state["seen"], dict):
+        state["seen"] = {}
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def ensure_history_csv_header() -> None:
+    if os.path.exists(HISTORY_CSV) and os.path.getsize(HISTORY_CSV) > 0:
+        return
+    with open(HISTORY_CSV, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        w.writeheader()
+
+
+def append_history(row: Dict[str, str]) -> None:
+    ensure_history_csv_header()
+    with open(HISTORY_CSV, "a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        w.writerow({k: row.get(k, "") for k in HISTORY_FIELDS})
+
+
+def read_history_rows(limit: int = 3000) -> List[Dict[str, str]]:
+    ensure_history_csv_header()
+    rows: List[Dict[str, str]] = []
+    with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rows.append({k: row.get(k, "") for k in HISTORY_FIELDS})
+    if len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
+
+
+# ---------------- Feed fetch with retries ----------------
 
 def fetch_feed_json(url: str) -> Optional[dict]:
     last_err = None
@@ -76,18 +132,8 @@ def fetch_feed_json(url: str) -> Optional[dict]:
     print(f"WARNING: feed fetch failed after retries: {last_err}")
     return None
 
-def load_state() -> Dict[str, Any]:
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"seen": {}}
 
-def save_state(state: Dict[str, Any]) -> None:
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+# ---------------- Alert parsing ----------------
 
 def pick_lv_info(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for info in alert.get("info", []) or []:
@@ -95,14 +141,15 @@ def pick_lv_info(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return info
     return None
 
+
 def parse_level(info: Dict[str, Any]) -> str:
-    # Meteoalarm params: awareness_level; lvl; color
     for p in info.get("parameter", []) or []:
         if p.get("valueName") == "awareness_level":
             parts = [x.strip() for x in (p.get("value") or "").split(";")]
             if len(parts) >= 2:
                 return parts[1].lower()
     return ""
+
 
 def parse_hazard(info: Dict[str, Any]) -> str:
     for p in info.get("parameter", []) or []:
@@ -112,8 +159,10 @@ def parse_hazard(info: Dict[str, Any]) -> str:
                 return parts[1]
     return ""
 
+
 def areas_from_info(info: Dict[str, Any]) -> List[str]:
     return [a.get("areaDesc", "").strip() for a in (info.get("area", []) or []) if a.get("areaDesc")]
+
 
 def is_marine_only(info: Dict[str, Any]) -> bool:
     areas = areas_from_info(info)
@@ -126,46 +175,47 @@ def is_marine_only(info: Dict[str, Any]) -> bool:
 
     return all(looks_marine(a) for a in areas)
 
+
 def fingerprint_info(info: Dict[str, Any]) -> str:
     payload = json.dumps(info, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
 
 # ---------------- Email ----------------
 
 def send_email(subject: str, body: str) -> None:
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
         raise RuntimeError("Missing SMTP_* / EMAIL_* secrets for email.")
-
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
-
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.starttls()
         s.login(SMTP_USER, SMTP_PASS)
         s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
 
+
 # ---------------- Telegram ----------------
 
 def telegram_send(text: str) -> None:
-    # Non-blocking: log errors but keep run alive so state/history saves
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("Telegram not configured (missing TG_BOT_TOKEN/TG_CHAT_ID), skipping Telegram.")
+        print("Telegram not configured, skipping.")
         return
     try:
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TG_CHAT_ID, "text": text, "disable_web_page_preview": True}
         r = requests.post(url, json=payload, timeout=30)
         if r.status_code >= 400:
-            print("Telegram error status:", r.status_code)
-            print("Telegram error body:", r.text)
+            print("Telegram error:", r.status_code, r.text)
     except Exception as e:
-        print("Telegram send exception:", e)
+        print("Telegram exception:", e)
+
 
 def should_escalate_telegram(level: str) -> bool:
     allowed = {x.strip() for x in TG_LEVELS.split(",") if x.strip()}
-    return level.lower() in allowed
+    return (level or "").lower() in allowed
+
 
 # ---------------- Formatting ----------------
 
@@ -176,7 +226,6 @@ def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
     areas = ", ".join(areas_from_info(info)) or "(nav norādīts)"
     desc = (info.get("description") or "").strip()
     web = info.get("web") or "https://bridinajumi.meteo.lv/"
-
     hdr = f"⚠️ {title} [{(level or 'N/A').upper()}{(' — ' + hazard) if hazard else ''}]"
     return "\n".join([
         hdr,
@@ -188,10 +237,12 @@ def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
         f"Avots: {web}",
     ]).strip()
 
+
 def format_grouped_email(changed_blocks: List[str]) -> Tuple[str, str]:
     subject = f"LVĢMC brīdinājumu izmaiņas: {len(changed_blocks)}"
     body = "\n\n---\n\n".join(changed_blocks)
     return subject, body
+
 
 def format_telegram_alert(info: Dict[str, Any], level: str, hazard: str) -> str:
     title = info.get("event") or "LVĢMC brīdinājums"
@@ -207,48 +258,15 @@ def format_telegram_alert(info: Dict[str, Any], level: str, hazard: str) -> str:
         f"Avots: https://bridinajumi.meteo.lv/"
     )
 
-# ---------------- History (CSV + HTML) ----------------
 
-def ensure_history_csv_header() -> None:
-    if os.path.exists(HISTORY_CSV) and os.path.getsize(HISTORY_CSV) > 0:
-        return
-    with open(HISTORY_CSV, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
-        w.writeheader()
-
-def append_history(row: Dict[str, str]) -> None:
-    ensure_history_csv_header()
-    with open(HISTORY_CSV, "a", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
-        w.writerow({k: row.get(k, "") for k in HISTORY_FIELDS})
-
-def read_history_rows(limit: int = 2000) -> List[Dict[str, str]]:
-    if not os.path.exists(HISTORY_CSV):
-        return []
-    rows: List[Dict[str, str]] = []
-    with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            rows.append({k: row.get(k, "") for k in HISTORY_FIELDS})
-    # Keep only last N rows in HTML for speed (CSV remains full archive)
-    if len(rows) > limit:
-        rows = rows[-limit:]
-    return rows
+# ---------------- Pretty HTML archive ----------------
 
 def level_badge(level: str) -> Tuple[str, str]:
     lvl = (level or "").lower()
     if lvl in LEVEL_TO_BADGE:
         return LEVEL_TO_BADGE[lvl]
-    # Sometimes LV text might be stored; handle lightly
-    if "dzelten" in lvl:
-        return ("Dzeltenais", "yellow")
-    if "oranž" in lvl or "orange" in lvl:
-        return ("Oranžais", "orange")
-    if "sarkan" in lvl or "red" in lvl:
-        return ("Sarkanais", "red")
-    if "zaļ" in lvl or "green" in lvl:
-        return ("Zaļais", "green")
     return ("—", "gray")
+
 
 def write_history_html() -> None:
     rows = list(reversed(read_history_rows(limit=3000)))  # newest first
@@ -256,7 +274,6 @@ def write_history_html() -> None:
     def esc(x: str) -> str:
         return html.escape(x or "")
 
-    # Build table rows
     tr_list = []
     for i, row in enumerate(rows):
         badge_text, badge_class = level_badge(row.get("level", ""))
@@ -281,7 +298,9 @@ def write_history_html() -> None:
 </tr>
 """.strip())
 
-    table_html = "\n".join(tr_list)
+    table_html = "\n".join(tr_list) if tr_list else """
+<tr><td colspan="8" class="muted">Vēl nav vēstures ierakstu. (Kad parādīsies jauns vai mainīts brīdinājums, tie tiks pierakstīti šeit.)</td></tr>
+""".strip()
 
     html_doc = f"""<!doctype html>
 <html lang="lv">
@@ -315,7 +334,7 @@ def write_history_html() -> None:
 </head>
 <body>
   <h1>LVĢMC brīdinājumu arhīvs (bot)</h1>
-  <div class="sub">Šī lapa tiek automātiski ģenerēta no <span class="mono">history.csv</span>. Ja brīdinājums mainās, tiek pievienots jauns ieraksts.</div>
+  <div class="sub">Šī lapa tiek automātiski ģenerēta no <span class="mono">history.csv</span>.</div>
 
   <div class="controls">
     <input id="q" type="search" placeholder="Meklēt (notikums, teritorija, teksts)..." oninput="applyFilters()"/>
@@ -376,7 +395,6 @@ def write_history_html() -> None:
     document.getElementById("count").innerText = `Rādīti ieraksti: ${shown} / ${rows.length}`;
   }}
 
-  // Simple table sort
   let sortDir = 1;
   function sortTable(col) {{
     const tbody = document.querySelector("#t tbody");
@@ -385,7 +403,6 @@ def write_history_html() -> None:
     rows.sort((a, b) => {{
       const ta = a.children[col].innerText.trim();
       const tb = b.children[col].innerText.trim();
-      // dates compare nicely lexicographically in ISO format
       if (ta < tb) return -1 * sortDir;
       if (ta > tb) return  1 * sortDir;
       return 0;
@@ -394,7 +411,6 @@ def write_history_html() -> None:
     applyFilters();
   }}
 
-  // initial
   applyFilters();
 </script>
 </body>
@@ -403,15 +419,21 @@ def write_history_html() -> None:
     with open(HISTORY_HTML, "w", encoding="utf-8") as f:
         f.write(html_doc)
 
+
 # ---------------- Main ----------------
 
 def main() -> None:
+    # Ensure files exist even if there are no changes today
+    ensure_history_csv_header()
+    write_history_html()
+
     state = load_state()
     seen: Dict[str, str] = state.get("seen", {})
 
     data = fetch_feed_json(FEED_URL)
     if data is None:
-        # feed down: keep state, exit cleanly
+        # still save state/history so workflow commits can happen
+        save_state(state)
         return
 
     changed_blocks: List[str] = []
@@ -437,14 +459,11 @@ def main() -> None:
         prev_fp = seen.get(identifier)
 
         if prev_fp != fp:
-            # Grouped email block
             changed_blocks.append(format_warning_block(info, level, hazard))
 
-            # Telegram escalation
             if should_escalate_telegram(level):
                 tg_alerts.append(format_telegram_alert(info, level, hazard))
 
-            # History row
             onset = info.get("onset") or info.get("effective") or ""
             expires = info.get("expires") or ""
             areas = ", ".join(areas_from_info(info))
@@ -460,34 +479,28 @@ def main() -> None:
                 "onset": (onset or "").replace("\n", " ").strip(),
                 "expires": (expires or "").replace("\n", " ").strip(),
                 "areas": (areas or "").replace("\n", " ").strip(),
-                "description": desc[:2000],  # keep plenty; HTML collapses it
+                "description": desc[:2000],
                 "source": web,
             })
 
-            # Update state for this identifier
             seen[identifier] = fp
 
-    # One email per run if there are changes
     if changed_blocks:
         subject, body = format_grouped_email(changed_blocks)
         send_email(subject, body)
 
-    # Telegram escalation (non-blocking)
     for msg in tg_alerts:
         telegram_send(msg)
 
-    # Always regenerate HTML if history exists (fast enough)
-    try:
-        write_history_html()
-    except Exception as e:
-        print("WARNING: could not write history.html:", e)
+    # regenerate HTML with new rows if added
+    write_history_html()
 
     state["seen"] = seen
-    state["updated_at"] = datetime.utcnow().isoformat() + "Z"
     save_state(state)
 
     print(f"Done. Changed warnings emailed: {len(changed_blocks)}. Telegram alerts sent: {len(tg_alerts)}.")
-    print(f"History files: {HISTORY_CSV}, {HISTORY_HTML}")
+    print(f"History files: {HISTORY_CSV}, {HISTORY_HTML}. State saved: {STATE_FILE}.")
+
 
 if __name__ == "__main__":
     main()
