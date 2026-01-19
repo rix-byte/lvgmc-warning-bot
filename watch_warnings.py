@@ -268,156 +268,402 @@ def level_badge(level: str) -> Tuple[str, str]:
     return ("—", "gray")
 
 
-def write_history_html() -> None:
-    rows = list(reversed(read_history_rows(limit=3000)))  # newest first
+def write_history_html():
+    import csv
+    import os
+    import json
+    from html import escape
+    from datetime import datetime, timezone
 
-    def esc(x: str) -> str:
-        return html.escape(x or "")
+    rows = []
+    if os.path.exists("history.csv"):
+        with open("history.csv", "r", encoding="utf-8", newline="") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                rows.append(row)
 
-    tr_list = []
-    for i, row in enumerate(rows):
-        badge_text, badge_class = level_badge(row.get("level", ""))
-        desc = row.get("description", "") or ""
-        desc_short = desc[:160] + ("…" if len(desc) > 160 else "")
-        desc_id = f"desc_{i}"
+    def norm(s: str) -> str:
+        return (s or "").strip()
 
-        tr_list.append(f"""
-<tr data-level="{esc((row.get('level','') or '').lower())}">
-  <td class="mono">{esc(row.get("timestamp_utc",""))}</td>
-  <td><span class="badge {badge_class}">{esc(badge_text)}</span></td>
-  <td class="wrap">{esc(row.get("event",""))}</td>
-  <td class="wrap">{esc(row.get("hazard",""))}</td>
-  <td class="wrap">{esc(row.get("areas",""))}</td>
-  <td class="mono">{esc(row.get("onset",""))} → {esc(row.get("expires",""))}</td>
-  <td class="wrap">
-    <div class="desc-short">{esc(desc_short)}</div>
-    <button class="linkbtn" onclick="toggleDesc('{desc_id}', this)">Rādīt/Slēpt</button>
-    <div id="{desc_id}" class="desc-full" style="display:none;">{esc(desc)}</div>
-  </td>
-  <td class="wrap"><a href="{esc(row.get("source",""))}" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-""".strip())
+    js_rows = []
+    for x in rows:
+        js_rows.append({
+            "timestamp_utc": norm(x.get("timestamp_utc", "")),
+            "identifier": norm(x.get("identifier", "")),
+            "event": norm(x.get("event", "")),
+            "level": norm(x.get("level", "")),
+            "hazard": norm(x.get("hazard", "")),
+            "onset": norm(x.get("onset", "")),
+            "expires": norm(x.get("expires", "")),
+            "areas": norm(x.get("areas", "")),
+            "description": norm(x.get("description", "")),
+            "source": norm(x.get("source", "")),
+        })
 
-    table_html = "\n".join(tr_list) if tr_list else """
-<tr><td colspan="8" class="muted">Vēl nav vēstures ierakstu. (Kad parādīsies jauns vai mainīts brīdinājums, tie tiks pierakstīti šeit.)</td></tr>
-""".strip()
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    html_doc = f"""<!doctype html>
+    html = """<!DOCTYPE html>
 <html lang="lv">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>LVĢMC brīdinājumu arhīvs (bot)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LVGMC brīdinājumu arhīvs (bot)</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 18px; }}
-    h1 {{ margin: 0 0 8px 0; font-size: 20px; }}
-    .sub {{ color: #666; margin-bottom: 14px; }}
-    .controls {{ display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 14px 0; }}
-    input[type="search"] {{ padding: 10px; min-width: 260px; border: 1px solid #ccc; border-radius: 8px; }}
-    select {{ padding: 10px; border: 1px solid #ccc; border-radius: 8px; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; }}
-    th {{ text-align: left; background: #fafafa; position: sticky; top: 0; z-index: 1; cursor: pointer; }}
-    .wrap {{ white-space: normal; }}
-    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: nowrap; }}
-    .badge {{ display:inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }}
-    .yellow {{ background: #fff3b0; }}
-    .orange {{ background: #ffd8a8; }}
-    .red {{ background: #ffc9c9; }}
-    .green {{ background: #d3f9d8; }}
-    .gray {{ background: #e9ecef; }}
-    .linkbtn {{ border: none; background: none; color: #1a73e8; padding: 0; cursor: pointer; font-size: 12px; }}
-    .desc-full {{ margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 8px; }}
-    .muted {{ color: #666; }}
-    .footer {{ margin-top: 14px; color: #666; font-size: 12px; }}
+    :root {
+      --bg: #0b1020;
+      --card: #101a33;
+      --muted: #95a3c4;
+      --text: #e9eeff;
+      --border: rgba(255,255,255,.10);
+      --shadow: 0 12px 30px rgba(0,0,0,.35);
+      --radius: 16px;
+
+      --yellow: #f5d90a;
+      --orange: #ff8a00;
+      --red: #ff3b30;
+      --green: #2ecc71;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(106, 88, 255, .35), transparent 60%),
+                  radial-gradient(900px 500px at 110% 0%, rgba(0, 209, 255, .22), transparent 55%),
+                  var(--bg);
+      color: var(--text);
+    }
+
+    a { color: #a8c7ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 28px auto 64px;
+      padding: 0 16px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .title {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: .2px;
+      margin: 0;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .card {
+      background: rgba(16, 26, 51, .78);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      backdrop-filter: blur(10px);
+      background: rgba(11, 16, 32, .75);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toolbar-inner {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    @media (min-width: 860px) {
+      .toolbar-inner {
+        grid-template-columns: 1.4fr .7fr .7fr .9fr auto;
+        align-items: center;
+      }
+    }
+
+    input, select, button {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      outline: none;
+    }
+    select { cursor: pointer; }
+    button {
+      width: auto;
+      cursor: pointer;
+      white-space: nowrap;
+      background: rgba(255,255,255,.07);
+    }
+    button:hover { background: rgba(255,255,255,.11); }
+
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dot {
+      width: 10px; height: 10px; border-radius: 999px;
+      display: inline-block; margin-right: 6px;
+    }
+    .dot.yellow { background: var(--yellow); }
+    .dot.orange { background: var(--orange); }
+    .dot.red { background: var(--red); }
+    .dot.green { background: var(--green); }
+
+    .table-wrap { overflow: auto; max-height: 75vh; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(16, 26, 51, .92);
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: .3px;
+      padding: 12px 12px;
+    }
+
+    tbody td {
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      padding: 12px 12px;
+      vertical-align: top;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    tbody tr:hover { background: rgba(255,255,255,.03); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(0,0,0,.15);
+      color: #111;
+    }
+    .badge.yellow { background: var(--yellow); }
+    .badge.orange { background: var(--orange); }
+    .badge.red { background: var(--red); color: #fff; }
+    .badge.green { background: var(--green); }
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 420px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    details { max-width: 520px; }
+    summary {
+      cursor: pointer;
+      color: #cfe0ff;
+      font-weight: 700;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display:none; }
+    .desc { margin-top: 8px; color: var(--text); white-space: pre-wrap; }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      background: rgba(16, 26, 51, .65);
+      flex-wrap: wrap;
+    }
+
+    .pager {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .pager button { padding: 8px 10px; border-radius: 10px; }
+    .count { white-space: nowrap; }
   </style>
 </head>
 <body>
-  <h1>LVĢMC brīdinājumu arhīvs (bot)</h1>
-  <div class="sub">Šī lapa tiek automātiski ģenerēta no <span class="mono">history.csv</span>.</div>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1 class="title">LVGMC brīdinājumu arhīvs (bot)</h1>
+        <p class="subtitle">Ģenerēts: <span id="gen"></span></p>
+      </div>
+      <div class="row">
+        <button onclick="downloadFile('history.csv')">⬇️ CSV</button>
+        <button onclick="downloadFile('history.html')">⬇️ HTML</button>
+      </div>
+    </header>
 
-  <div class="controls">
-    <input id="q" type="search" placeholder="Meklēt (notikums, teritorija, teksts)..." oninput="applyFilters()"/>
-    <select id="lvl" onchange="applyFilters()">
-      <option value="">Visi līmeņi</option>
-      <option value="yellow">Dzeltenais</option>
-      <option value="orange">Oranžais</option>
-      <option value="red">Sarkanais</option>
-      <option value="green">Zaļais</option>
-    </select>
+    <div class="card">
+      <div class="toolbar">
+        <div class="toolbar-inner">
+          <input id="q" placeholder="Meklēt (notikums, teritorija, teksts…)" />
+
+          <select id="level">
+            <option value="">Visi līmeņi</option>
+            <option value="YELLOW">Dzeltenais</option>
+            <option value="ORANGE">Oranžais</option>
+            <option value="RED">Sarkanais</option>
+          </select>
+
+          <select id="hazard">
+            <option value="">Visas parādības</option>
+          </select>
+
+          <select id="territory">
+            <option value="">Visas teritorijas</option>
+          </select>
+
+          <div class="row" style="justify-content:flex-end;">
+            <select id="pageSize" style="min-width:140px;">
+              <option value="25">25 / lapa</option>
+              <option value="50" selected>50 / lapa</option>
+              <option value="100">100 / lapa</option>
+              <option value="0">Visi</option>
+            </select>
+          </div>
+
+          <div class="legend">
+            <span><span class="dot green"></span>nav nepieciešama piesardzība</span>
+            <span><span class="dot yellow"></span>potenciāli bīstams</span>
+            <span><span class="dot orange"></span>bīstams</span>
+            <span><span class="dot red"></span>ļoti bīstams</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Atklāts (UTC)</th>
+              <th>Krāsa</th>
+              <th>Notikums</th>
+              <th>Parādība</th>
+              <th>Teritorija</th>
+              <th>Spēkā</th>
+              <th>Brīdinājuma teksts</th>
+              <th>Avots</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="footer">
+        <div class="count" id="count">Rādīti ieraksti: 0 / 0</div>
+        <div class="pager">
+          <button id="prev">◀</button>
+          <span id="pageInfo" class="muted">Lapa 1</span>
+          <button id="next">▶</button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <div class="muted" id="count"></div>
-
-  <table id="t">
-    <thead>
-      <tr>
-        <th onclick="sortTable(0)">Atklāts (UTC)</th>
-        <th onclick="sortTable(1)">Krāsa</th>
-        <th onclick="sortTable(2)">Notikums</th>
-        <th onclick="sortTable(3)">Parādība</th>
-        <th onclick="sortTable(4)">Teritorija</th>
-        <th onclick="sortTable(5)">Spēkā</th>
-        <th>Brīdinājuma teksts</th>
-        <th>Avots</th>
-      </tr>
-    </thead>
-    <tbody>
-      {table_html}
-    </tbody>
-  </table>
-
-  <div class="footer">Pēdējā ģenerēšana: {datetime.utcnow().isoformat()}Z</div>
-
 <script>
-  function toggleDesc(id, btn) {{
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.style.display = (el.style.display === "none" || el.style.display === "") ? "block" : "none";
-  }}
+  const GENERATED = """ + json.dumps(generated) + """;
+  const ALL = """ + json.dumps(js_rows, ensure_ascii=False) + """;
 
-  function applyFilters() {{
-    const q = (document.getElementById("q").value || "").toLowerCase();
-    const lvl = (document.getElementById("lvl").value || "").toLowerCase();
-    const rows = document.querySelectorAll("#t tbody tr");
-    let shown = 0;
-    for (const r of rows) {{
-      const rowLvl = (r.getAttribute("data-level") || "");
-      if (lvl && rowLvl !== lvl) {{
-        r.style.display = "none";
-        continue;
-      }}
-      const text = r.innerText.toLowerCase();
-      const ok = !q || text.includes(q);
-      r.style.display = ok ? "" : "none";
-      if (ok) shown++;
-    }}
-    document.getElementById("count").innerText = `Rādīti ieraksti: ${{{{shown}}}} / ${{{{rows.length}}}}`;
-  }}
+  document.getElementById('gen').textContent = GENERATED;
 
-  let sortDir = 1;
-  function sortTable(col) {{
-    const tbody = document.querySelector("#t tbody");
-    const rows = Array.from(tbody.querySelectorAll("tr"));
-    sortDir = -sortDir;
-    rows.sort((a, b) => {{
-      const ta = a.children[col].innerText.trim();
-      const tb = b.children[col].innerText.trim();
-      if (ta < tb) return -1 * sortDir;
-      if (ta > tb) return  1 * sortDir;
-      return 0;
-    }});
-    for (const r of rows) tbody.appendChild(r);
-    applyFilters();
-  }}
+  const els = {
+    q: document.getElementById('q'),
+    level: document.getElementById('level'),
+    hazard: document.getElementById('hazard'),
+    territory: document.getElementById('territory'),
+    pageSize: document.getElementById('pageSize'),
+    tbody: document.getElementById('tbody'),
+    count: document.getElementById('count'),
+    prev: document.getElementById('prev'),
+    next: document.getElementById('next'),
+    pageInfo: document.getElementById('pageInfo'),
+  };
 
-  applyFilters();
-</script>
-</body>
-</html>
-"""
-    with open(HISTORY_HTML, "w", encoding="utf-8") as f:
-        f.write(html_doc)
+  function uniq(values) {
+    return Array.from(new Set(values)).filter(v => v && v.trim().length > 0)
+      .sort((a,b) => a.localeCompare(b));
+  }
+
+  function initDropdowns() {
+    uniq(ALL.map(r => r.hazard)).forEach(h => {
+      const o = document.createElement('option');
+      o.value = h;
+      o.textContent = h;
+      els.hazard.appendChild(o);
+    });
+
+    uniq(ALL.map(r => r.areas)).forEach(t => {
+      const o = document.createElement('option');
+      o.value = t;
+      o.textContent = t.length > 60 ? (t.slice(0,60) + '…') : t;
+      o.title = t;
+      els.territory.appendChild(o);
+    });
+  }
+
+  function badge(level) {
+    const L = (level || '').toUpperCase();
+    let cls = 'green', txt = 'Zaļais';
+    if (L === 'YELLOW') { cls='yellow'; txt='Dzeltenais'; }
+    else if (L === 'ORANGE') { cls='orange'; txt='Oranžais'; }
+    else if (L === 'RED') { cls='red'; txt='Sarkanais'; }
+    return '<span class="badge ' + cls + '">' + txt + '</span>';
+  }
+
+  function contains(hay, needle) {
+    return (hay || '').toLowerCase().includes((needle || '').toLowerCase());
+  }
+
+  function filterRows() {
+    const q = els.q.value.trim().toLowerCase
 
 
 # ---------------- Main ----------------
