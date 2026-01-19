@@ -1,65 +1,60 @@
 name: LVGMC warning watcher
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"   # every 30 minutes (adjust if needed)
+  workflow_dispatch:        # enables "Run workflow" button
 
 permissions:
-  contents: write
-
-concurrency:
-  group: lvgmc-warning-watcher
-  cancel-in-progress: true
+  contents: write           # REQUIRED to commit files back
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run watcher
+      - name: Run warning watcher
         env:
-          # ---- Email ----
+          # Email
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM:${{ secrets.EMAIL_FROM }}
 
-          # ---- Telegram ----
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TG_LEVELS: ${{ secrets.TG_LEVELS }}
+          # Telegram
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          # ---- Behavior ----
-          SUPPRESS_MARINE: ${{ secrets.SUPPRESS_MARINE }}
-        run: python watch_warnings.py
+        run: |
+          python watch_warnings.py
 
-      - name: Save state + history
-        if: always()
+      - name: Publish archive to GitHub Pages
+        run: |
+          mkdir -p docs
+          if [ -f history.html ]; then
+            cp history.html docs/index.html
+          fi
+
+      - name: Commit state and history
         run: |
           git config user.name "warning-bot"
           git config user.email "warning-bot@users.noreply.github.com"
 
-          # Avoid non-fast-forward errors if multiple runs happen close together
-          git pull --rebase || true
+          git add state.json history.csv history.html docs/index.html || true
 
-          git add state.json history.csv history.html || true
-          git commit -m "Update warning state/history" || true
+          git diff --cached --quiet || git commit -m "Update warning state and history"
           git push || true
