@@ -51,15 +51,15 @@ jobs:
           SUPPRESS_MARINE: ${{ secrets.SUPPRESS_MARINE }}
         run: python watch_warnings.py
 
-      - name: Save state
+      - name: Save state + history
         if: always()
         run: |
           git config user.name "warning-bot"
           git config user.email "warning-bot@users.noreply.github.com"
 
-          # get latest to avoid non-fast-forward errors
+          # Avoid non-fast-forward errors if multiple runs happen close together
           git pull --rebase || true
 
-          git add state.json || true
-          git commit -m "Update warning state" || true
+          git add state.json history.csv history.html || true
+          git commit -m "Update warning state/history" || true
           git push || true
