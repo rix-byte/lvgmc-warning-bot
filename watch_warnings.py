@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import html
 import json
 import os
 import time
@@ -10,7 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 FEED_URL = "https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/"
+
 STATE_FILE = "state.json"
+HISTORY_CSV = "history.csv"
+HISTORY_HTML = "history.html"
 
 # ---------------- Email (required) ----------------
 SMTP_HOST = os.getenv("SMTP_HOST", "")
@@ -20,15 +25,12 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", EMAIL_TO)
 
-# ---------------- Telegram (required for mobile alerts) ----------------
+# ---------------- Telegram (recommended for mobile alerts) ----------------
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")  # numeric string
+TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()  # for testing: yellow,orange,red
 
 # ---------------- Behavior toggles ----------------
-# Telegram escalation levels (default: orange+red). For testing: yellow,orange,red
-TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()
-
-# Suppress sea-only warnings
 SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes", "on")
 
 MARINE_KEYWORDS = [
@@ -38,11 +40,34 @@ MARINE_KEYWORDS = [
     "sea",
 ]
 
+HISTORY_FIELDS = [
+    "timestamp_utc",
+    "identifier",
+    "event",
+    "level",
+    "hazard",
+    "onset",
+    "expires",
+    "areas",
+    "description",
+    "source",
+]
+
+LEVEL_TO_BADGE = {
+    "yellow": ("Dzeltenais", "yellow"),
+    "orange": ("Oranžais", "orange"),
+    "red": ("Sarkanais", "red"),
+    "green": ("Zaļais", "green"),
+    "": ("—", "gray"),
+}
+
+# ---------------- Utilities ----------------
+
 def fetch_feed_json(url: str) -> Optional[dict]:
     last_err = None
     for attempt in range(1, 6):
         try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "lvgmc-warning-bot/telegram"})
+            r = requests.get(url, timeout=30, headers={"User-Agent": "lvgmc-warning-bot"})
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -71,6 +96,7 @@ def pick_lv_info(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 def parse_level(info: Dict[str, Any]) -> str:
+    # Meteoalarm params: awareness_level; lvl; color
     for p in info.get("parameter", []) or []:
         if p.get("valueName") == "awareness_level":
             parts = [x.strip() for x in (p.get("value") or "").split(";")]
@@ -104,6 +130,8 @@ def fingerprint_info(info: Dict[str, Any]) -> str:
     payload = json.dumps(info, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+# ---------------- Email ----------------
+
 def send_email(subject: str, body: str) -> None:
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
         raise RuntimeError("Missing SMTP_* / EMAIL_* secrets for email.")
@@ -118,10 +146,12 @@ def send_email(subject: str, body: str) -> None:
         s.login(SMTP_USER, SMTP_PASS)
         s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
 
+# ---------------- Telegram ----------------
+
 def telegram_send(text: str) -> None:
-    # Non-blocking: log errors but keep run alive so state saves
+    # Non-blocking: log errors but keep run alive so state/history saves
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("Telegram not configured (missing TG_BOT_TOKEN/TG_CHAT_ID), skipping.")
+        print("Telegram not configured (missing TG_BOT_TOKEN/TG_CHAT_ID), skipping Telegram.")
         return
     try:
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
@@ -136,6 +166,8 @@ def telegram_send(text: str) -> None:
 def should_escalate_telegram(level: str) -> bool:
     allowed = {x.strip() for x in TG_LEVELS.split(",") if x.strip()}
     return level.lower() in allowed
+
+# ---------------- Formatting ----------------
 
 def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
     title = info.get("event") or "LVĢMC brīdinājums"
@@ -171,8 +203,207 @@ def format_telegram_alert(info: Dict[str, Any], level: str, hazard: str) -> str:
         f"{title}\n"
         f"Tips: {hazard or '-'}\n"
         f"Teritorija: {areas}\n"
-        f"Spēkā: {onset} → {expires}"
+        f"Spēkā: {onset} → {expires}\n"
+        f"Avots: https://bridinajumi.meteo.lv/"
     )
+
+# ---------------- History (CSV + HTML) ----------------
+
+def ensure_history_csv_header() -> None:
+    if os.path.exists(HISTORY_CSV) and os.path.getsize(HISTORY_CSV) > 0:
+        return
+    with open(HISTORY_CSV, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        w.writeheader()
+
+def append_history(row: Dict[str, str]) -> None:
+    ensure_history_csv_header()
+    with open(HISTORY_CSV, "a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+        w.writerow({k: row.get(k, "") for k in HISTORY_FIELDS})
+
+def read_history_rows(limit: int = 2000) -> List[Dict[str, str]]:
+    if not os.path.exists(HISTORY_CSV):
+        return []
+    rows: List[Dict[str, str]] = []
+    with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rows.append({k: row.get(k, "") for k in HISTORY_FIELDS})
+    # Keep only last N rows in HTML for speed (CSV remains full archive)
+    if len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
+
+def level_badge(level: str) -> Tuple[str, str]:
+    lvl = (level or "").lower()
+    if lvl in LEVEL_TO_BADGE:
+        return LEVEL_TO_BADGE[lvl]
+    # Sometimes LV text might be stored; handle lightly
+    if "dzelten" in lvl:
+        return ("Dzeltenais", "yellow")
+    if "oranž" in lvl or "orange" in lvl:
+        return ("Oranžais", "orange")
+    if "sarkan" in lvl or "red" in lvl:
+        return ("Sarkanais", "red")
+    if "zaļ" in lvl or "green" in lvl:
+        return ("Zaļais", "green")
+    return ("—", "gray")
+
+def write_history_html() -> None:
+    rows = list(reversed(read_history_rows(limit=3000)))  # newest first
+
+    def esc(x: str) -> str:
+        return html.escape(x or "")
+
+    # Build table rows
+    tr_list = []
+    for i, row in enumerate(rows):
+        badge_text, badge_class = level_badge(row.get("level", ""))
+        desc = row.get("description", "") or ""
+        desc_short = desc[:160] + ("…" if len(desc) > 160 else "")
+        desc_id = f"desc_{i}"
+
+        tr_list.append(f"""
+<tr data-level="{esc((row.get('level','') or '').lower())}">
+  <td class="mono">{esc(row.get("timestamp_utc",""))}</td>
+  <td><span class="badge {badge_class}">{esc(badge_text)}</span></td>
+  <td class="wrap">{esc(row.get("event",""))}</td>
+  <td class="wrap">{esc(row.get("hazard",""))}</td>
+  <td class="wrap">{esc(row.get("areas",""))}</td>
+  <td class="mono">{esc(row.get("onset",""))} → {esc(row.get("expires",""))}</td>
+  <td class="wrap">
+    <div class="desc-short">{esc(desc_short)}</div>
+    <button class="linkbtn" onclick="toggleDesc('{desc_id}', this)">Rādīt/Slēpt</button>
+    <div id="{desc_id}" class="desc-full" style="display:none;">{esc(desc)}</div>
+  </td>
+  <td class="wrap"><a href="{esc(row.get("source",""))}" target="_blank" rel="noopener">Avots</a></td>
+</tr>
+""".strip())
+
+    table_html = "\n".join(tr_list)
+
+    html_doc = f"""<!doctype html>
+<html lang="lv">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>LVĢMC brīdinājumu arhīvs (bot)</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 18px; }}
+    h1 {{ margin: 0 0 8px 0; font-size: 20px; }}
+    .sub {{ color: #666; margin-bottom: 14px; }}
+    .controls {{ display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 14px 0; }}
+    input[type="search"] {{ padding: 10px; min-width: 260px; border: 1px solid #ccc; border-radius: 8px; }}
+    select {{ padding: 10px; border: 1px solid #ccc; border-radius: 8px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; }}
+    th {{ text-align: left; background: #fafafa; position: sticky; top: 0; z-index: 1; cursor: pointer; }}
+    .wrap {{ white-space: normal; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: nowrap; }}
+    .badge {{ display:inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }}
+    .yellow {{ background: #fff3b0; }}
+    .orange {{ background: #ffd8a8; }}
+    .red {{ background: #ffc9c9; }}
+    .green {{ background: #d3f9d8; }}
+    .gray {{ background: #e9ecef; }}
+    .linkbtn {{ border: none; background: none; color: #1a73e8; padding: 0; cursor: pointer; font-size: 12px; }}
+    .desc-full {{ margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 8px; }}
+    .muted {{ color: #666; }}
+    .footer {{ margin-top: 14px; color: #666; font-size: 12px; }}
+  </style>
+</head>
+<body>
+  <h1>LVĢMC brīdinājumu arhīvs (bot)</h1>
+  <div class="sub">Šī lapa tiek automātiski ģenerēta no <span class="mono">history.csv</span>. Ja brīdinājums mainās, tiek pievienots jauns ieraksts.</div>
+
+  <div class="controls">
+    <input id="q" type="search" placeholder="Meklēt (notikums, teritorija, teksts)..." oninput="applyFilters()"/>
+    <select id="lvl" onchange="applyFilters()">
+      <option value="">Visi līmeņi</option>
+      <option value="yellow">Dzeltenais</option>
+      <option value="orange">Oranžais</option>
+      <option value="red">Sarkanais</option>
+      <option value="green">Zaļais</option>
+    </select>
+  </div>
+
+  <div class="muted" id="count"></div>
+
+  <table id="t">
+    <thead>
+      <tr>
+        <th onclick="sortTable(0)">Atklāts (UTC)</th>
+        <th onclick="sortTable(1)">Krāsa</th>
+        <th onclick="sortTable(2)">Notikums</th>
+        <th onclick="sortTable(3)">Parādība</th>
+        <th onclick="sortTable(4)">Teritorija</th>
+        <th onclick="sortTable(5)">Spēkā</th>
+        <th>Brīdinājuma teksts</th>
+        <th>Avots</th>
+      </tr>
+    </thead>
+    <tbody>
+      {table_html}
+    </tbody>
+  </table>
+
+  <div class="footer">Pēdējā ģenerēšana: {datetime.utcnow().isoformat()}Z</div>
+
+<script>
+  function toggleDesc(id, btn) {{
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = (el.style.display === "none" || el.style.display === "") ? "block" : "none";
+  }}
+
+  function applyFilters() {{
+    const q = (document.getElementById("q").value || "").toLowerCase();
+    const lvl = (document.getElementById("lvl").value || "").toLowerCase();
+    const rows = document.querySelectorAll("#t tbody tr");
+    let shown = 0;
+    for (const r of rows) {{
+      const rowLvl = (r.getAttribute("data-level") || "");
+      if (lvl && rowLvl !== lvl) {{
+        r.style.display = "none";
+        continue;
+      }}
+      const text = r.innerText.toLowerCase();
+      const ok = !q || text.includes(q);
+      r.style.display = ok ? "" : "none";
+      if (ok) shown++;
+    }}
+    document.getElementById("count").innerText = `Rādīti ieraksti: ${shown} / ${rows.length}`;
+  }}
+
+  // Simple table sort
+  let sortDir = 1;
+  function sortTable(col) {{
+    const tbody = document.querySelector("#t tbody");
+    const rows = Array.from(tbody.querySelectorAll("tr"));
+    sortDir = -sortDir;
+    rows.sort((a, b) => {{
+      const ta = a.children[col].innerText.trim();
+      const tb = b.children[col].innerText.trim();
+      // dates compare nicely lexicographically in ISO format
+      if (ta < tb) return -1 * sortDir;
+      if (ta > tb) return  1 * sortDir;
+      return 0;
+    }});
+    for (const r of rows) tbody.appendChild(r);
+    applyFilters();
+  }}
+
+  // initial
+  applyFilters();
+</script>
+</body>
+</html>
+"""
+    with open(HISTORY_HTML, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+
+# ---------------- Main ----------------
 
 def main() -> None:
     state = load_state()
@@ -185,6 +416,7 @@ def main() -> None:
 
     changed_blocks: List[str] = []
     tg_alerts: List[str] = []
+    now_utc = datetime.utcnow().isoformat() + "Z"
 
     for w in data.get("warnings", []) or []:
         alert = w.get("alert") or {}
@@ -205,11 +437,34 @@ def main() -> None:
         prev_fp = seen.get(identifier)
 
         if prev_fp != fp:
+            # Grouped email block
             changed_blocks.append(format_warning_block(info, level, hazard))
 
+            # Telegram escalation
             if should_escalate_telegram(level):
                 tg_alerts.append(format_telegram_alert(info, level, hazard))
 
+            # History row
+            onset = info.get("onset") or info.get("effective") or ""
+            expires = info.get("expires") or ""
+            areas = ", ".join(areas_from_info(info))
+            desc = (info.get("description") or "").replace("\n", " ").strip()
+            web = info.get("web") or "https://bridinajumi.meteo.lv/"
+
+            append_history({
+                "timestamp_utc": now_utc,
+                "identifier": identifier,
+                "event": (info.get("event") or "").replace("\n", " ").strip(),
+                "level": (level or "").lower(),
+                "hazard": (hazard or "").replace("\n", " ").strip(),
+                "onset": (onset or "").replace("\n", " ").strip(),
+                "expires": (expires or "").replace("\n", " ").strip(),
+                "areas": (areas or "").replace("\n", " ").strip(),
+                "description": desc[:2000],  # keep plenty; HTML collapses it
+                "source": web,
+            })
+
+            # Update state for this identifier
             seen[identifier] = fp
 
     # One email per run if there are changes
@@ -221,11 +476,18 @@ def main() -> None:
     for msg in tg_alerts:
         telegram_send(msg)
 
+    # Always regenerate HTML if history exists (fast enough)
+    try:
+        write_history_html()
+    except Exception as e:
+        print("WARNING: could not write history.html:", e)
+
     state["seen"] = seen
     state["updated_at"] = datetime.utcnow().isoformat() + "Z"
     save_state(state)
 
     print(f"Done. Changed warnings emailed: {len(changed_blocks)}. Telegram alerts sent: {len(tg_alerts)}.")
+    print(f"History files: {HISTORY_CSV}, {HISTORY_HTML}")
 
 if __name__ == "__main__":
     main()
