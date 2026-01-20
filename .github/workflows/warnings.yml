@@ -2,9 +2,9 @@ name: LVGMC warning watcher
 run-name: LVGMC warning watcher
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"   # every 30 minutes
 
 permissions:
   contents: write
@@ -16,13 +16,14 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -32,8 +33,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run watcher
+      # -------------------------
+      # A) Watcher (alerts + CSV)
+      # -------------------------
+      - name: Run warning watcher
         env:
+          # Email
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -41,19 +46,28 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
 
+          # Telegram
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TG_LEVELS: ${{ secrets.TG_LEVELS }}
 
-          SUPPRESS_MARINE: ${{ secrets.SUPPRESS_MARINE }}
-        run: python watch_warnings.py
+          # Behaviour
+          SUPPRESS_MARINE: "1"
 
-      - name: Publish archive to GitHub Pages
         run: |
-          mkdir -p docs
-          cp -f history.html docs/index.html || true
+          python watch_warnings.py
 
-      - name: Commit state and history
+      # -------------------------
+      # B) Build HTML UI (Pages)
+      # -------------------------
+      - name: Build HTML archive for GitHub Pages
+        run: |
+          python build_html.py
+
+      # -------------------------
+      # C) Commit state + history
+      # -------------------------
+      - name: Commit updated state and history
         if: always()
         run: |
           git config user.name "warning-bot"
@@ -61,6 +75,7 @@ jobs:
 
           git pull --rebase || true
 
-          git add state.json history.csv history.html docs/index.html || true
-          git diff --cached --quiet || git commit -m "Update warning state/history"
+          git add state.json history.csv docs/index.html || true
+
+          git diff --cached --quiet || git commit -m "Update warning state and archive"
           git push || true
