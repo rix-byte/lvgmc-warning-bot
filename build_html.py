@@ -11,11 +11,41 @@ def read_rows():
     if not os.path.exists(HISTORY_CSV):
         return []
     with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    return rows
+
+
+def is_real_row(r: dict) -> bool:
+    """
+    Drop garbage/partial rows (the ones you see as timestamp-only empty rows).
+    We consider a row 'real' if it has at least level+event/hazard/areas or a description.
+    """
+    ts = (r.get("timestamp_utc") or "").strip()
+    level = (r.get("level") or "").strip()
+    event = (r.get("event") or "").strip()
+    hazard = (r.get("hazard") or "").strip()
+    areas = (r.get("areas") or "").strip()
+    desc = (r.get("description") or "").strip()
+    onset = (r.get("onset") or "").strip()
+    expires = (r.get("expires") or "").strip()
+
+    # If it has no timestamp, it’s not useful.
+    if not ts:
+        return False
+
+    # If timestamp exists but everything else is empty → drop it.
+    if not (level or event or hazard or areas or desc or onset or expires):
+        return False
+
+    # Also drop any row that somehow has only timestamp + spaces.
+    if (level or event or hazard or areas or desc or onset or expires) is False:
+        return False
+
+    return True
 
 
 def main():
-    rows = read_rows()
+    rows = [r for r in read_rows() if is_real_row(r)]
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     data_json = json.dumps(rows, ensure_ascii=False)
 
@@ -93,13 +123,21 @@ def main():
       box-shadow: var(--shadow);
     }}
 
+    /* Sticky area (legend + filters) */
+    .sticky {{
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: #ffffffcc;
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+    }}
+
     .legend {{
       display: flex;
-      gap: 10px;
+      gap: 12px;
       flex-wrap: wrap;
       padding: 12px 14px;
-      border-bottom: 1px solid var(--border);
-      background: #fff;
     }}
     .lg-item {{
       display: inline-flex;
@@ -119,16 +157,10 @@ def main():
     .dot-red {{ background: #ff3b30; }}
 
     .toolbar {{
-      padding: 12px 14px;
+      padding: 12px 14px 14px;
       display: grid;
       gap: 10px;
       grid-template-columns: 1fr;
-      border-bottom: 1px solid var(--border);
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      background: #ffffffcc;
-      backdrop-filter: blur(8px);
     }}
 
     @media (min-width: 980px) {{
@@ -187,9 +219,10 @@ def main():
       font-size: 13px;
     }}
 
-    th {{
+    /* Sticky header INSIDE the scroll container */
+    thead th {{
       position: sticky;
-      top: 132px; /* legend (44) + toolbar (~88) */
+      top: 0;
       z-index: 10;
       background: #fff;
       color: var(--muted);
@@ -199,7 +232,6 @@ def main():
       border-bottom: 1px solid var(--border);
     }}
 
-    /* Better row readability */
     tbody tr:hover {{ background: #f8fafc; }}
 
     td.col-time {{ white-space: nowrap; color: #0f172a; }}
@@ -306,30 +338,32 @@ def main():
     </header>
 
     <div class="card">
-      <div class="legend">
-        <div class="lg-item"><span class="lg-dot dot-yellow"></span> Dzeltenais — potenciāli bīstams</div>
-        <div class="lg-item"><span class="lg-dot dot-orange"></span> Oranžais — bīstams</div>
-        <div class="lg-item"><span class="lg-dot dot-red"></span> Sarkanais — ļoti bīstams</div>
-      </div>
+      <div class="sticky">
+        <div class="legend">
+          <div class="lg-item"><span class="lg-dot dot-yellow"></span> Dzeltenais — potenciāli bīstams</div>
+          <div class="lg-item"><span class="lg-dot dot-orange"></span> Oranžais — bīstams</div>
+          <div class="lg-item"><span class="lg-dot dot-red"></span> Sarkanais — ļoti bīstams</div>
+        </div>
 
-      <div class="toolbar">
-        <input id="q" placeholder="Meklēt (notikums, teritorija, teksts…)" />
-        <select id="level">
-          <option value="">Visi līmeņi</option>
-          <option value="YELLOW">Dzeltenais</option>
-          <option value="ORANGE">Oranžais</option>
-          <option value="RED">Sarkanais</option>
-        </select>
-        <select id="hazard"><option value="">Visas parādības</option></select>
-        <select id="region"><option value="">Visas teritorijas</option></select>
-        <div style="display:flex; gap:10px;">
-          <select id="pageSize" style="flex:1;">
-            <option value="25">25 / lapa</option>
-            <option value="50" selected>50 / lapa</option>
-            <option value="100">100 / lapa</option>
-            <option value="0">Visi</option>
+        <div class="toolbar">
+          <input id="q" placeholder="Meklēt (notikums, teritorija, teksts…)" />
+          <select id="level">
+            <option value="">Visi līmeņi</option>
+            <option value="YELLOW">Dzeltenais</option>
+            <option value="ORANGE">Oranžais</option>
+            <option value="RED">Sarkanais</option>
           </select>
-          <button class="btn btn-primary" id="exportBtn" title="Lejupielādēt filtrēto sarakstu CSV">Eksportēt</button>
+          <select id="hazard"><option value="">Visas parādības</option></select>
+          <select id="region"><option value="">Visas teritorijas</option></select>
+          <div style="display:flex; gap:10px;">
+            <select id="pageSize" style="flex:1;">
+              <option value="25">25 / lapa</option>
+              <option value="50" selected>50 / lapa</option>
+              <option value="100">100 / lapa</option>
+              <option value="0">Visi</option>
+            </select>
+            <button class="btn btn-primary" id="exportBtn" title="Lejupielādēt filtrēto sarakstu CSV">Eksportēt</button>
+          </div>
         </div>
       </div>
 
@@ -449,18 +483,15 @@ def main():
   }}
 
   function fmtTime(s) {{
-    // ISO like: 2026-01-19T12:35:16.781023Z or 2026-01-15T04:00:00+03:00
     if (!s) return '';
     const t = String(s);
 
-    // date + time
-    const base = t.replace('T',' ').slice(0,16); // YYYY-MM-DD HH:MM
+    // YYYY-MM-DD HH:MM
+    const base = t.replace('T',' ').slice(0,16);
 
     if (t.endsWith('Z')) return base + ' UTC';
-
     const m = t.match(/([+-]\\d\\d:\\d\\d)$/);
     if (m) return base + ' (UTC' + m[1] + ')';
-
     return base;
   }}
 
@@ -554,7 +585,6 @@ def main():
       );
     }}).join('');
 
-    // Attach listeners after HTML injected
     els.tbody.querySelectorAll('button[data-text]').forEach(btn => {{
       btn.addEventListener('click', () => {{
         openModal(btn.getAttribute('data-title'), btn.getAttribute('data-text'));
@@ -566,7 +596,6 @@ def main():
     els.prev.disabled = (page <= 1);
     els.next.disabled = (page >= pages);
 
-    // Export uses full filtered list (not just current page)
     els.exportBtn.onclick = () => downloadCSV(rows);
   }}
 
