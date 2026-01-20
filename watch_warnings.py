@@ -1,15 +1,14 @@
-import csv
-import hashlib
-import html
-import json
 import os
+import json
+import csv
 import time
-from datetime import datetime
-import smtplib
-from email.mime.text import MIMEText
-from typing import Any, Dict, List, Optional, Tuple
-
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Tuple
 import requests
+import smtplib
+from email.message import EmailMessage
+from html import escape
+
 
 FEED_URL = "https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/"
 
@@ -17,527 +16,503 @@ STATE_FILE = "state.json"
 HISTORY_CSV = "history.csv"
 HISTORY_HTML = "history.html"
 
-# ---------------- Email (required) ----------------
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-EMAIL_TO = os.getenv("EMAIL_TO", "")
-EMAIL_FROM = os.getenv("EMAIL_FROM", EMAIL_TO)
 
-# ---------------- Telegram ----------------
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
-TG_LEVELS = os.getenv("TG_LEVELS", "orange,red").lower()
+# ----------------------------
+# Helpers
+# ----------------------------
 
-# ---------------- Behavior ----------------
-SUPPRESS_MARINE = os.getenv("SUPPRESS_MARINE", "true").lower() in ("1", "true", "yes", "on")
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-MARINE_KEYWORDS = [
-    "baltijas jūra", "baltijas juras", "jūra", "juras", "jūrā", "jūrās",
-    "atklātā jūra", "atklata jura", "akvatorija", "akvatōrija", "sea",
-]
+def safe_get(d: Dict[str, Any], path: List[str], default=None):
+    cur = d
+    for p in path:
+        if isinstance(cur, dict) and p in cur:
+            cur = cur[p]
+        else:
+            return default
+    return cur
 
-HISTORY_FIELDS = [
-    "timestamp_utc",
-    "identifier",
-    "event",
-    "level",
-    "hazard",
-    "onset",
-    "expires",
-    "areas",
-    "description",
-    "source",
-]
-
-LEVEL_TO_BADGE = {
-    "yellow": ("Dzeltenais", "yellow"),
-    "orange": ("Oranžais", "orange"),
-    "red": ("Sarkanais", "red"),
-    "green": ("Zaļais", "green"),
-    "": ("—", "gray"),
-}
-
-
-# ---------------- Robust IO ----------------
+def norm(s: Any) -> str:
+    if s is None:
+        return ""
+    return str(s).strip()
 
 def load_state() -> Dict[str, Any]:
-    """
-    Always return a valid structure:
-      {"seen": {...}, "updated_at": "..."}
-    """
-    state: Dict[str, Any] = {"seen": {}}
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                # merge/normalize
-                state["seen"] = raw.get("seen") if isinstance(raw.get("seen"), dict) else {}
-                # keep anything else if you want
+                return json.load(f)
         except Exception:
             pass
-    return state
-
+    return {
+        "seen": {},      # key -> fingerprint
+        "last_run_utc": ""
+    }
 
 def save_state(state: Dict[str, Any]) -> None:
-    state["updated_at"] = datetime.utcnow().isoformat() + "Z"
-    # Ensure schema
-    if "seen" not in state or not isinstance(state["seen"], dict):
-        state["seen"] = {}
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-
-def ensure_history_csv_header() -> None:
-    if os.path.exists(HISTORY_CSV) and os.path.getsize(HISTORY_CSV) > 0:
+def ensure_history_csv() -> None:
+    if os.path.exists(HISTORY_CSV):
         return
     with open(HISTORY_CSV, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
-        w.writeheader()
+        w = csv.writer(f)
+        w.writerow([
+            "timestamp_utc",
+            "identifier",
+            "level",
+            "hazard",
+            "event",
+            "areas",
+            "onset",
+            "expires",
+            "description",
+            "source",
+        ])
 
-
-def append_history(row: Dict[str, str]) -> None:
-    ensure_history_csv_header()
+def append_history(rows: List[Dict[str, str]]) -> None:
+    """Append rows to history.csv (caller ensures dedup if needed)."""
+    ensure_history_csv()
     with open(HISTORY_CSV, "a", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
-        w.writerow({k: row.get(k, "") for k in HISTORY_FIELDS})
+        w = csv.writer(f)
+        for r in rows:
+            w.writerow([
+                r.get("timestamp_utc", ""),
+                r.get("identifier", ""),
+                r.get("level", ""),
+                r.get("hazard", ""),
+                r.get("event", ""),
+                r.get("areas", ""),
+                r.get("onset", ""),
+                r.get("expires", ""),
+                r.get("description", ""),
+                r.get("source", ""),
+            ])
 
-
-def read_history_rows(limit: int = 3000) -> List[Dict[str, str]]:
-    ensure_history_csv_header()
-    rows: List[Dict[str, str]] = []
+def load_history_keys() -> set:
+    """Used for dedup history rows across runs."""
+    keys = set()
+    if not os.path.exists(HISTORY_CSV):
+        return keys
     with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            rows.append({k: row.get(k, "") for k in HISTORY_FIELDS})
-    if len(rows) > limit:
-        rows = rows[-limit:]
-    return rows
+            k = (
+                norm(row.get("identifier")),
+                norm(row.get("level")),
+                norm(row.get("hazard")),
+                norm(row.get("areas")),
+                norm(row.get("onset")),
+                norm(row.get("expires")),
+            )
+            keys.add(k)
+    return keys
 
 
-# ---------------- Feed fetch with retries ----------------
+# ----------------------------
+# Feed parsing (Meteoalarm JSON)
+# ----------------------------
 
-def fetch_feed_json(url: str) -> Optional[dict]:
+def fetch_feed_with_retries(url: str, retries: int = 3, timeout: int = 30) -> Dict[str, Any]:
     last_err = None
-    for attempt in range(1, 6):
+    for i in range(retries):
         try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "lvgmc-warning-bot"})
+            r = requests.get(url, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             last_err = e
-            time.sleep(min(2 ** attempt, 16))
-    print(f"WARNING: feed fetch failed after retries: {last_err}")
-    return None
+            time.sleep(2 * (i + 1))
+    raise last_err
 
+def is_marine_warning(hazard: str, event: str, areas: str) -> bool:
+    text = f"{hazard} {event} {areas}".lower()
+    marine_terms = [
+        "marine", "sea", "gulf", "līcis", "jūra", "piekrast", "coast",
+        "waves", "wave", "swell", "gusts at sea", "at sea"
+    ]
+    return any(t in text for t in marine_terms)
 
-# ---------------- Alert parsing ----------------
+def level_from_color(color: str) -> str:
+    c = (color or "").strip().lower()
+    if c == "red":
+        return "RED"
+    if c == "orange":
+        return "ORANGE"
+    if c == "yellow":
+        return "YELLOW"
+    if c == "green":
+        return "GREEN"
+    # sometimes empty
+    return c.upper() if c else ""
 
-def pick_lv_info(alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    for info in alert.get("info", []) or []:
-        if info.get("language") == "lv":
-            return info
-    return None
+def extract_warnings(feed: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Normalize feed into list of warnings.
+    We try to be robust to schema variation.
+    """
+    warnings = []
 
+    # The Meteoalarm feed often contains a list under "warnings" or "data"
+    candidates = []
+    for key in ["warnings", "data", "alerts", "items"]:
+        v = feed.get(key)
+        if isinstance(v, list):
+            candidates = v
+            break
 
-def parse_level(info: Dict[str, Any]) -> str:
-    for p in info.get("parameter", []) or []:
-        if p.get("valueName") == "awareness_level":
-            parts = [x.strip() for x in (p.get("value") or "").split(";")]
-            if len(parts) >= 2:
-                return parts[1].lower()
-    return ""
+    # if nothing found, attempt nested
+    if not candidates:
+        v = safe_get(feed, ["result", "warnings"])
+        if isinstance(v, list):
+            candidates = v
 
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
 
-def parse_hazard(info: Dict[str, Any]) -> str:
-    for p in info.get("parameter", []) or []:
-        if p.get("valueName") == "awareness_type":
-            parts = [x.strip() for x in (p.get("value") or "").split(";")]
-            if len(parts) >= 2:
-                return parts[1]
-    return ""
+        # common fields we try
+        identifier = norm(item.get("identifier") or item.get("id") or safe_get(item, ["alert", "identifier"]))
+        color = norm(item.get("color") or item.get("level") or safe_get(item, ["alert", "level"]))
+        level = level_from_color(color) if color.lower() in ("green", "yellow", "orange", "red") else norm(color).upper()
 
+        hazard = norm(item.get("hazard") or item.get("event") or safe_get(item, ["alert", "event"]))
+        event = norm(item.get("headline") or item.get("title") or item.get("event") or hazard)
 
-def areas_from_info(info: Dict[str, Any]) -> List[str]:
-    return [a.get("areaDesc", "").strip() for a in (info.get("area", []) or []) if a.get("areaDesc")]
+        areas = norm(item.get("area") or item.get("areas") or item.get("region") or safe_get(item, ["alert", "area"]))
+        onset = norm(item.get("onset") or item.get("start") or safe_get(item, ["alert", "onset"]))
+        expires = norm(item.get("expires") or item.get("end") or safe_get(item, ["alert", "expires"]))
+        description = norm(item.get("description") or item.get("text") or safe_get(item, ["alert", "description"]))
+        source = norm(item.get("url") or item.get("source") or safe_get(item, ["alert", "web"]) or FEED_URL)
 
+        # if area is list sometimes
+        if isinstance(item.get("areas"), list):
+            areas = ", ".join([norm(x) for x in item["areas"] if norm(x)])
 
-def is_marine_only(info: Dict[str, Any]) -> bool:
-    areas = areas_from_info(info)
-    if not areas:
-        return False
+        # if no identifier, synthesize one
+        if not identifier:
+            identifier = f"{level}:{hazard}:{areas}:{onset}:{expires}"
 
-    def looks_marine(text: str) -> bool:
-        t = text.lower()
-        return any(k in t for k in MARINE_KEYWORDS)
-
-    return all(looks_marine(a) for a in areas)
-
-
-def fingerprint_info(info: Dict[str, Any]) -> str:
-    payload = json.dumps(info, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-# ---------------- Email ----------------
-
-def send_email(subject: str, body: str) -> None:
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO]):
-        raise RuntimeError("Missing SMTP_* / EMAIL_* secrets for email.")
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-        s.starttls()
-        s.login(SMTP_USER, SMTP_PASS)
-        s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-
-
-# ---------------- Telegram ----------------
-
-def telegram_send(text: str) -> None:
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("Telegram not configured, skipping.")
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TG_CHAT_ID, "text": text, "disable_web_page_preview": True}
-        r = requests.post(url, json=payload, timeout=30)
-        if r.status_code >= 400:
-            print("Telegram error:", r.status_code, r.text)
-    except Exception as e:
-        print("Telegram exception:", e)
-
-
-def should_escalate_telegram(level: str) -> bool:
-    allowed = {x.strip() for x in TG_LEVELS.split(",") if x.strip()}
-    return (level or "").lower() in allowed
-
-
-# ---------------- Formatting ----------------
-
-def format_warning_block(info: Dict[str, Any], level: str, hazard: str) -> str:
-    title = info.get("event") or "LVĢMC brīdinājums"
-    onset = info.get("onset") or info.get("effective") or "(nav)"
-    expires = info.get("expires") or "(nav)"
-    areas = ", ".join(areas_from_info(info)) or "(nav norādīts)"
-    desc = (info.get("description") or "").strip()
-    web = info.get("web") or "https://bridinajumi.meteo.lv/"
-    hdr = f"⚠️ {title} [{(level or 'N/A').upper()}{(' — ' + hazard) if hazard else ''}]"
-    return "\n".join([
-        hdr,
-        f"Teritorija: {areas}",
-        f"Spēkā: {onset} → {expires}",
-        "",
-        desc,
-        "",
-        f"Avots: {web}",
-    ]).strip()
-
-
-def format_grouped_email(changed_blocks: List[str]) -> Tuple[str, str]:
-    subject = f"LVĢMC brīdinājumu izmaiņas: {len(changed_blocks)}"
-    body = "\n\n---\n\n".join(changed_blocks)
-    return subject, body
-
-
-def format_telegram_alert(info: Dict[str, Any], level: str, hazard: str) -> str:
-    title = info.get("event") or "LVĢMC brīdinājums"
-    onset = info.get("onset") or info.get("effective") or "-"
-    expires = info.get("expires") or "-"
-    areas = ", ".join(areas_from_info(info)) or "-"
-    return (
-        f"⚠️ LVĢMC ALERT ({level.upper() if level else 'N/A'})\n"
-        f"{title}\n"
-        f"Tips: {hazard or '-'}\n"
-        f"Teritorija: {areas}\n"
-        f"Spēkā: {onset} → {expires}\n"
-        f"Avots: https://bridinajumi.meteo.lv/"
-    )
-
-
-# ---------------- Pretty HTML archive ----------------
-
-def level_badge(level: str) -> Tuple[str, str]:
-    lvl = (level or "").lower()
-    if lvl in LEVEL_TO_BADGE:
-        return LEVEL_TO_BADGE[lvl]
-    return ("—", "gray")
-
-
-def write_history_html():
-    import csv
-    import os
-    import json
-    from html import escape
-    from datetime import datetime, timezone
-
-    rows = []
-    if os.path.exists("history.csv"):
-        with open("history.csv", "r", encoding="utf-8", newline="") as f:
-            r = csv.DictReader(f)
-            for row in r:
-                rows.append(row)
-
-    def norm(s: str) -> str:
-        return (s or "").strip()
-
-    js_rows = []
-    for x in rows:
-        js_rows.append({
-            "timestamp_utc": norm(x.get("timestamp_utc", "")),
-            "identifier": norm(x.get("identifier", "")),
-            "event": norm(x.get("event", "")),
-            "level": norm(x.get("level", "")),
-            "hazard": norm(x.get("hazard", "")),
-            "onset": norm(x.get("onset", "")),
-            "expires": norm(x.get("expires", "")),
-            "areas": norm(x.get("areas", "")),
-            "description": norm(x.get("description", "")),
-            "source": norm(x.get("source", "")),
+        warnings.append({
+            "timestamp_utc": utc_now_iso(),
+            "identifier": identifier,
+            "level": level,
+            "hazard": hazard,
+            "event": event,
+            "areas": areas,
+            "onset": onset,
+            "expires": expires,
+            "description": description,
+            "source": source,
         })
 
+    return warnings
+
+
+# ----------------------------
+# Notifications
+# ----------------------------
+
+def send_email(subject: str, body: str) -> None:
+    host = os.getenv("SMTP_HOST", "")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "")
+    pwd = os.getenv("SMTP_PASS", "")
+    email_to = os.getenv("EMAIL_TO", "")
+    email_from = os.getenv("EMAIL_FROM", user)
+
+    if not (host and port and user and pwd and email_to and email_from):
+        print("Email not configured (missing SMTP_* or EMAIL_*). Skipping email.")
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = email_from
+    msg["To"] = email_to
+    msg.set_content(body)
+
+    with smtplib.SMTP(host, port) as s:
+        s.starttls()
+        s.login(user, pwd)
+        s.send_message(msg)
+
+def telegram_send(text: str) -> None:
+    token = os.getenv("TG_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    chat_id = os.getenv("TG_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or ""
+    if not token or not chat_id:
+        print("Telegram not configured (TG_BOT_TOKEN/TG_CHAT_ID missing). Skipping Telegram.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True
+    }
+    r = requests.post(url, json=payload, timeout=20)
+    if r.status_code >= 300:
+        print("Telegram error:", r.status_code, r.text)
+
+def format_grouped_email(changed: List[Dict[str, str]]) -> Tuple[str, str]:
+    # group by level
+    order = {"RED": 0, "ORANGE": 1, "YELLOW": 2, "GREEN": 3, "": 9}
+    changed_sorted = sorted(changed, key=lambda x: (order.get(x["level"], 9), x["hazard"], x["areas"]))
+
+    lines = []
+    lines.append("LVGMC/Meteoalarm brīdinājumi — jauni vai atjaunināti\n")
+    for w in changed_sorted:
+        lines.append(f"[{w['level']}] {w['event']}".strip())
+        if w["areas"]:
+            lines.append(f"Teritorija: {w['areas']}")
+        if w["onset"] or w["expires"]:
+            lines.append(f"Spēkā: {w['onset']} → {w['expires']}".strip())
+        if w["description"]:
+            lines.append(w["description"])
+        if w["source"]:
+            lines.append(f"Avots: {w['source']}")
+        lines.append("-" * 50)
+
+    subject = f"LVGMC brīdinājumi: {len(changed)} izmaiņas"
+    body = "\n".join(lines)
+    return subject, body
+
+def format_telegram_one(w: Dict[str, str]) -> str:
+    return (
+        f"⚠️ {w['level']} — {w['event']}\n"
+        f"📍 {w['areas']}\n"
+        f"⏱ {w['onset']} → {w['expires']}\n"
+        f"{w['source']}"
+    ).strip()
+
+
+# ----------------------------
+# HTML archive (nice UI)
+# ----------------------------
+
+def read_history_rows() -> List[Dict[str, str]]:
+    rows = []
+    if not os.path.exists(HISTORY_CSV):
+        return rows
+    with open(HISTORY_CSV, "r", encoding="utf-8", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rows.append({k: norm(v) for k, v in row.items()})
+    return rows
+
+def write_history_html() -> None:
+    rows = read_history_rows()
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    html = """<!DOCTYPE html>
+    # Use JSON to pass all rows to browser
+    data_json = json.dumps(rows, ensure_ascii=False)
+
+    html = f"""<!doctype html>
 <html lang="lv">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LVGMC brīdinājumu arhīvs (bot)</title>
+  <title>LVGMC brīdinājumu arhīvs</title>
   <style>
-    :root {
+    :root {{
       --bg: #0b1020;
-      --card: #101a33;
-      --muted: #95a3c4;
+      --card: rgba(16, 26, 51, .82);
+      --border: rgba(255,255,255,.12);
       --text: #e9eeff;
-      --border: rgba(255,255,255,.10);
-      --shadow: 0 12px 30px rgba(0,0,0,.35);
+      --muted: #a5b0cf;
+      --shadow: 0 14px 40px rgba(0,0,0,.35);
       --radius: 16px;
 
       --yellow: #f5d90a;
       --orange: #ff8a00;
       --red: #ff3b30;
       --green: #2ecc71;
-    }
+    }}
 
-    * { box-sizing: border-box; }
-    body {
+    * {{ box-sizing: border-box; }}
+    body {{
       margin: 0;
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      background: radial-gradient(1200px 600px at 10% -10%, rgba(106, 88, 255, .35), transparent 60%),
-                  radial-gradient(900px 500px at 110% 0%, rgba(0, 209, 255, .22), transparent 55%),
-                  var(--bg);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(106, 88, 255, .35), transparent 60%),
+        radial-gradient(900px 500px at 110% 0%, rgba(0, 209, 255, .20), transparent 55%),
+        var(--bg);
       color: var(--text);
-    }
+    }}
 
-    a { color: #a8c7ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    .wrap {
-      max-width: 1200px;
-      margin: 28px auto 64px;
+    .wrap {{
+      max-width: 1280px;
+      margin: 26px auto 64px;
       padding: 0 16px;
-    }
+    }}
 
-    header {
+    header {{
       display: flex;
-      align-items: flex-start;
       justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 14px;
+      gap: 14px;
+      align-items: flex-start;
       flex-wrap: wrap;
-    }
+      margin-bottom: 14px;
+    }}
 
-    .title {
+    h1 {{
+      margin: 0;
       font-size: 22px;
       font-weight: 800;
-      letter-spacing: .2px;
-      margin: 0;
-    }
-
-    .subtitle {
-      margin: 6px 0 0;
+    }}
+    .sub {{
+      margin-top: 6px;
       color: var(--muted);
       font-size: 13px;
-    }
+    }}
 
-    .card {
-      background: rgba(16, 26, 51, .78);
+    .card {{
+      background: var(--card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       overflow: hidden;
-    }
+    }}
 
-    .toolbar {
+    .toolbar {{
       position: sticky;
       top: 0;
-      z-index: 30;
+      z-index: 20;
+      background: rgba(11, 16, 32, .72);
       backdrop-filter: blur(10px);
-      background: rgba(11, 16, 32, .75);
       border-bottom: 1px solid var(--border);
-    }
+    }}
 
-    .toolbar-inner {
+    .toolbar-inner {{
       display: grid;
       grid-template-columns: 1fr;
       gap: 10px;
       padding: 14px;
-    }
-
-    @media (min-width: 860px) {
-      .toolbar-inner {
-        grid-template-columns: 1.4fr .7fr .7fr .9fr auto;
+    }}
+    @media (min-width: 920px) {{
+      .toolbar-inner {{
+        grid-template-columns: 1.4fr .7fr .7fr .7fr auto;
         align-items: center;
-      }
-    }
+      }}
+    }}
 
-    input, select, button {
-      width: 100%;
+    input, select, button {{
       padding: 10px 12px;
       border-radius: 12px;
       border: 1px solid var(--border);
-      background: rgba(255,255,255,.04);
+      background: rgba(255,255,255,.05);
       color: var(--text);
       outline: none;
-    }
-    select { cursor: pointer; }
-    button {
-      width: auto;
+    }}
+    button {{
       cursor: pointer;
       white-space: nowrap;
-      background: rgba(255,255,255,.07);
-    }
-    button:hover { background: rgba(255,255,255,.11); }
+      width: auto;
+    }}
+    button:hover {{ background: rgba(255,255,255,.10); }}
 
-    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-
-    .legend {
+    .legend {{
       display: flex;
-      flex-wrap: wrap;
       gap: 10px;
-      align-items: center;
+      flex-wrap: wrap;
       color: var(--muted);
       font-size: 12px;
-    }
+      margin-top: 4px;
+    }}
+    .dot {{ width: 10px; height: 10px; border-radius: 999px; display:inline-block; margin-right: 6px; }}
+    .dot.green {{ background: var(--green); }}
+    .dot.yellow {{ background: var(--yellow); }}
+    .dot.orange {{ background: var(--orange); }}
+    .dot.red {{ background: var(--red); }}
 
-    .dot {
-      width: 10px; height: 10px; border-radius: 999px;
-      display: inline-block; margin-right: 6px;
-    }
-    .dot.yellow { background: var(--yellow); }
-    .dot.orange { background: var(--orange); }
-    .dot.red { background: var(--red); }
-    .dot.green { background: var(--green); }
+    .table-wrap {{
+      overflow: auto;
+      max-height: 78vh;
+    }}
 
-    .table-wrap { overflow: auto; max-height: 75vh; }
-
-    table {
+    table {{
       width: 100%;
       border-collapse: collapse;
-      min-width: 980px;
-    }
+      min-width: 1100px;
+    }}
 
-    thead th {
+    thead th {{
       position: sticky;
       top: 0;
-      z-index: 20;
       background: rgba(16, 26, 51, .92);
       border-bottom: 1px solid var(--border);
+      padding: 12px;
       text-align: left;
       font-size: 12px;
       color: var(--muted);
-      letter-spacing: .3px;
-      padding: 12px 12px;
-    }
+      letter-spacing: .2px;
+    }}
 
-    tbody td {
+    tbody td {{
+      padding: 12px;
       border-bottom: 1px solid rgba(255,255,255,.06);
-      padding: 12px 12px;
       vertical-align: top;
       font-size: 13px;
       line-height: 1.35;
-    }
-    tbody tr:hover { background: rgba(255,255,255,.03); }
+    }}
+    tbody tr:hover {{ background: rgba(255,255,255,.03); }}
 
-    .badge {
+    .badge {{
       display: inline-flex;
       align-items: center;
-      gap: 6px;
       padding: 5px 10px;
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 700;
-      border: 1px solid rgba(0,0,0,.15);
+      font-weight: 800;
+      border: 1px solid rgba(0,0,0,.2);
       color: #111;
-    }
-    .badge.yellow { background: var(--yellow); }
-    .badge.orange { background: var(--orange); }
-    .badge.red { background: var(--red); color: #fff; }
-    .badge.green { background: var(--green); }
+    }}
+    .badge.GREEN {{ background: var(--green); }}
+    .badge.YELLOW {{ background: var(--yellow); }}
+    .badge.ORANGE {{ background: var(--orange); }}
+    .badge.RED {{ background: var(--red); color: #fff; }}
 
-    .muted { color: var(--muted); font-size: 12px; }
-
-    .pill {
-      display: inline-block;
-      padding: 4px 8px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      color: var(--muted);
-      font-size: 12px;
-      max-width: 420px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    details { max-width: 520px; }
-    summary {
+    details summary {{
       cursor: pointer;
-      color: #cfe0ff;
+      color: #bcd4ff;
       font-weight: 700;
-      list-style: none;
-    }
-    summary::-webkit-details-marker { display:none; }
-    .desc { margin-top: 8px; color: var(--text); white-space: pre-wrap; }
+    }}
+    .desc {{
+      margin-top: 8px;
+      white-space: pre-wrap;
+      color: var(--text);
+    }}
 
-    .footer {
-      display: flex;
+    .footer {{
+      display:flex;
       justify-content: space-between;
+      align-items:center;
       gap: 10px;
       padding: 12px 14px;
+      border-top: 1px solid var(--border);
       color: var(--muted);
       font-size: 12px;
-      border-top: 1px solid var(--border);
-      background: rgba(16, 26, 51, .65);
       flex-wrap: wrap;
-    }
-
-    .pager {
-      display: flex;
-      flex-wrap: wrap;
+    }}
+    .pager {{
+      display:flex;
       gap: 8px;
-      align-items: center;
-      justify-content: flex-end;
-    }
-    .pager button { padding: 8px 10px; border-radius: 10px; }
-    .count { white-space: nowrap; }
+      align-items:center;
+      flex-wrap: wrap;
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <div>
-        <h1 class="title">LVGMC brīdinājumu arhīvs (bot)</h1>
-        <p class="subtitle">Ģenerēts: <span id="gen"></span></p>
+        <h1>LVGMC brīdinājumu arhīvs (bot)</h1>
+        <div class="sub">Ģenerēts: <b>{escape(generated)}</b> • Dati no history.csv</div>
       </div>
-      <div class="row">
-        <button onclick="downloadFile('history.csv')">⬇️ CSV</button>
-        <button onclick="downloadFile('history.html')">⬇️ HTML</button>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button onclick="download('history.csv')">⬇️ CSV</button>
+        <button onclick="download('history.html')">⬇️ HTML</button>
       </div>
     </header>
 
@@ -561,14 +536,12 @@ def write_history_html():
             <option value="">Visas teritorijas</option>
           </select>
 
-          <div class="row" style="justify-content:flex-end;">
-            <select id="pageSize" style="min-width:140px;">
-              <option value="25">25 / lapa</option>
-              <option value="50" selected>50 / lapa</option>
-              <option value="100">100 / lapa</option>
-              <option value="0">Visi</option>
-            </select>
-          </div>
+          <select id="pageSize">
+            <option value="25">25 / lapa</option>
+            <option value="50" selected>50 / lapa</option>
+            <option value="100">100 / lapa</option>
+            <option value="0">Visi</option>
+          </select>
 
           <div class="legend">
             <span><span class="dot green"></span>nav nepieciešama piesardzība</span>
@@ -598,10 +571,10 @@ def write_history_html():
       </div>
 
       <div class="footer">
-        <div class="count" id="count">Rādīti ieraksti: 0 / 0</div>
+        <div id="count">Rādīti ieraksti: 0 / 0</div>
         <div class="pager">
           <button id="prev">◀</button>
-          <span id="pageInfo" class="muted">Lapa 1</span>
+          <span id="pageInfo">Lapa 1</span>
           <button id="next">▶</button>
         </div>
       </div>
@@ -609,12 +582,9 @@ def write_history_html():
   </div>
 
 <script>
-  const GENERATED = """ + json.dumps(generated) + """;
-  const ALL = """ + json.dumps(js_rows, ensure_ascii=False) + """;
+  const ALL = {data_json};
 
-  document.getElementById('gen').textContent = GENERATED;
-
-  const els = {
+  const els = {{
     q: document.getElementById('q'),
     level: document.getElementById('level'),
     hazard: document.getElementById('hazard'),
@@ -625,128 +595,215 @@ def write_history_html():
     prev: document.getElementById('prev'),
     next: document.getElementById('next'),
     pageInfo: document.getElementById('pageInfo'),
-  };
+  }};
 
-  function uniq(values) {
-    return Array.from(new Set(values)).filter(v => v && v.trim().length > 0)
-      .sort((a,b) => a.localeCompare(b));
-  }
+  function uniq(arr) {{
+    return Array.from(new Set(arr.filter(v => v && v.trim().length > 0))).sort((a,b)=>a.localeCompare(b));
+  }}
 
-  function initDropdowns() {
-    uniq(ALL.map(r => r.hazard)).forEach(h => {
+  function initFilters() {{
+    uniq(ALL.map(r => r.hazard)).forEach(v => {{
       const o = document.createElement('option');
-      o.value = h;
-      o.textContent = h;
+      o.value = v;
+      o.textContent = v;
       els.hazard.appendChild(o);
-    });
+    }});
 
-    uniq(ALL.map(r => r.areas)).forEach(t => {
+    uniq(ALL.map(r => r.areas)).forEach(v => {{
       const o = document.createElement('option');
-      o.value = t;
-      o.textContent = t.length > 60 ? (t.slice(0,60) + '…') : t;
-      o.title = t;
+      o.value = v;
+      o.textContent = v.length > 80 ? v.slice(0,80)+'…' : v;
+      o.title = v;
       els.territory.appendChild(o);
-    });
-  }
+    }});
+  }}
 
-  function badge(level) {
-    const L = (level || '').toUpperCase();
-    let cls = 'green', txt = 'Zaļais';
-    if (L === 'YELLOW') { cls='yellow'; txt='Dzeltenais'; }
-    else if (L === 'ORANGE') { cls='orange'; txt='Oranžais'; }
-    else if (L === 'RED') { cls='red'; txt='Sarkanais'; }
-    return '<span class="badge ' + cls + '">' + txt + '</span>';
-  }
+  function matchText(r, q) {{
+    if (!q) return true;
+    const hay = (r.event+' '+r.hazard+' '+r.areas+' '+r.description).toLowerCase();
+    return hay.includes(q.toLowerCase());
+  }}
 
-  function contains(hay, needle) {
-    return (hay || '').toLowerCase().includes((needle || '').toLowerCase());
-  }
+  function matchesFilters(r) {{
+    const q = els.q.value.trim();
+    const L = els.level.value.trim();
+    const H = els.hazard.value.trim();
+    const T = els.territory.value.trim();
 
-  function filterRows() {
-    const q = els.q.value.trim().toLowerCase
+    if (L && (r.level||'').toUpperCase() !== L) return false;
+    if (H && (r.hazard||'') !== H) return false;
+    if (T && (r.areas||'') !== T) return false;
+    if (!matchText(r, q)) return false;
+    return true;
+  }}
+
+  function badge(level) {{
+    const L = (level||'').toUpperCase();
+    const label = L === 'YELLOW' ? 'Dzeltenais' : (L === 'ORANGE' ? 'Oranžais' : (L === 'RED' ? 'Sarkanais' : ''));
+    return `<span class="badge ${L}">${label || L}</span>`;
+  }}
+
+  let page = 1;
+
+  function render() {{
+    const filtered = ALL.filter(matchesFilters);
+
+    // newest first
+    filtered.sort((a,b) => (b.timestamp_utc||'').localeCompare(a.timestamp_utc||''));
+
+    const ps = parseInt(els.pageSize.value, 10);
+    const total = filtered.length;
+
+    let start = 0, end = total, pages = 1;
+    if (ps > 0) {{
+      pages = Math.max(1, Math.ceil(total / ps));
+      page = Math.min(page, pages);
+      start = (page - 1) * ps;
+      end = Math.min(total, start + ps);
+    }} else {{
+      page = 1;
+      pages = 1;
+    }}
+
+    const shown = filtered.slice(start, end);
+
+    els.tbody.innerHTML = shown.map(r => `
+      <tr>
+        <td>${r.timestamp_utc || ''}</td>
+        <td>${badge(r.level)}</td>
+        <td>${r.event || ''}</td>
+        <td>${r.hazard || ''}</td>
+        <td>${r.areas || ''}</td>
+        <td>${(r.onset||'') + ' → ' + (r.expires||'')}</td>
+        <td>
+          <details>
+            <summary>Rādīt</summary>
+            <div class="desc">${(r.description||'').replaceAll('<','&lt;').replaceAll('>','&gt;')}</div>
+          </details>
+        </td>
+        <td>${r.source ? `<a href="${r.source}" target="_blank" rel="noreferrer">Avots</a>` : ''}</td>
+      </tr>
+    `).join('');
+
+    els.count.textContent = `Rādīti ieraksti: ${shown.length} / ${total}`;
+    els.pageInfo.textContent = `Lapa ${page} / ${pages}`;
+
+    els.prev.disabled = (page <= 1);
+    els.next.disabled = (page >= pages);
+  }}
+
+  function resetAndRender() {{
+    page = 1;
+    render();
+  }}
+
+  ['input','change'].forEach(ev => {{
+    els.q.addEventListener(ev, resetAndRender);
+    els.level.addEventListener(ev, resetAndRender);
+    els.hazard.addEventListener(ev, resetAndRender);
+    els.territory.addEventListener(ev, resetAndRender);
+    els.pageSize.addEventListener(ev, resetAndRender);
+  }});
+
+  els.prev.addEventListener('click', () => {{ page = Math.max(1, page-1); render(); }});
+  els.next.addEventListener('click', () => {{ page = page+1; render(); }});
+
+  function download(file) {{
+    const a = document.createElement('a');
+    a.href = file;
+    a.download = file;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }}
+  window.download = download;
+
+  initFilters();
+  render();
+</script>
+</body>
+</html>
+"""
+
+    with open(HISTORY_HTML, "w", encoding="utf-8") as f:
+        f.write(html)
 
 
-# ---------------- Main ----------------
+# ----------------------------
+# Main
+# ----------------------------
 
-def main() -> None:
-    # Ensure files exist even if there are no changes today
-    ensure_history_csv_header()
-    write_history_html()
+def fingerprint(w: Dict[str, str]) -> str:
+    # used to detect changes
+    return json.dumps({
+        "level": w.get("level", ""),
+        "hazard": w.get("hazard", ""),
+        "event": w.get("event", ""),
+        "areas": w.get("areas", ""),
+        "onset": w.get("onset", ""),
+        "expires": w.get("expires", ""),
+        "description": w.get("description", ""),
+        "source": w.get("source", ""),
+    }, ensure_ascii=False, sort_keys=True)
+
+def main():
+    suppress_marine = (os.getenv("SUPPRESS_MARINE", "1").strip() != "0")
+
+    # Telegram levels to notify (default ORANGE+RED)
+    tg_levels_raw = os.getenv("TG_LEVELS", "ORANGE,RED")
+    tg_levels = set([x.strip().upper() for x in tg_levels_raw.split(",") if x.strip()])
 
     state = load_state()
-    seen: Dict[str, str] = state.get("seen", {})
+    seen = state.get("seen", {}) if isinstance(state.get("seen"), dict) else {}
 
-    data = fetch_feed_json(FEED_URL)
-    if data is None:
-        # still save state/history so workflow commits can happen
-        save_state(state)
-        return
+    feed = fetch_feed_with_retries(FEED_URL, retries=3, timeout=30)
+    warnings = extract_warnings(feed)
 
-    changed_blocks: List[str] = []
-    tg_alerts: List[str] = []
-    now_utc = datetime.utcnow().isoformat() + "Z"
-
-    for w in data.get("warnings", []) or []:
-        alert = w.get("alert") or {}
-        identifier = alert.get("identifier")
-        if not identifier:
+    # suppress marine
+    filtered = []
+    for w in warnings:
+        if suppress_marine and is_marine_warning(w["hazard"], w["event"], w["areas"]):
             continue
+        filtered.append(w)
 
-        info = pick_lv_info(alert)
-        if not info:
-            continue
+    changed = []
+    history_add = []
+    history_keys = load_history_keys()
 
-        if SUPPRESS_MARINE and is_marine_only(info):
-            continue
+    for w in filtered:
+        key = w["identifier"]
+        fp = fingerprint(w)
 
-        level = parse_level(info)
-        hazard = parse_hazard(info)
-        fp = fingerprint_info(info)
-        prev_fp = seen.get(identifier)
+        if seen.get(key) != fp:
+            changed.append(w)
+            seen[key] = fp
 
-        if prev_fp != fp:
-            changed_blocks.append(format_warning_block(info, level, hazard))
+        hk = (w["identifier"], w["level"], w["hazard"], w["areas"], w["onset"], w["expires"])
+        if hk not in history_keys:
+            history_keys.add(hk)
+            history_add.append(w)
 
-            if should_escalate_telegram(level):
-                tg_alerts.append(format_telegram_alert(info, level, hazard))
+    # Write history CSV + HTML always (even if no changes)
+    if history_add:
+        append_history(history_add)
 
-            onset = info.get("onset") or info.get("effective") or ""
-            expires = info.get("expires") or ""
-            areas = ", ".join(areas_from_info(info))
-            desc = (info.get("description") or "").replace("\n", " ").strip()
-            web = info.get("web") or "https://bridinajumi.meteo.lv/"
-
-            append_history({
-                "timestamp_utc": now_utc,
-                "identifier": identifier,
-                "event": (info.get("event") or "").replace("\n", " ").strip(),
-                "level": (level or "").lower(),
-                "hazard": (hazard or "").replace("\n", " ").strip(),
-                "onset": (onset or "").replace("\n", " ").strip(),
-                "expires": (expires or "").replace("\n", " ").strip(),
-                "areas": (areas or "").replace("\n", " ").strip(),
-                "description": desc[:2000],
-                "source": web,
-            })
-
-            seen[identifier] = fp
-
-    if changed_blocks:
-        subject, body = format_grouped_email(changed_blocks)
-        send_email(subject, body)
-
-    for msg in tg_alerts:
-        telegram_send(msg)
-
-    # regenerate HTML with new rows if added
     write_history_html()
 
+    # Notify ONLY on changes
+    if changed:
+        subject, body = format_grouped_email(changed)
+        send_email(subject, body)
+
+        # Telegram for certain levels
+        for w in changed:
+            if w["level"].upper() in tg_levels:
+                telegram_send(format_telegram_one(w))
+
     state["seen"] = seen
+    state["last_run_utc"] = utc_now_iso()
     save_state(state)
 
-    print(f"Done. Changed warnings emailed: {len(changed_blocks)}. Telegram alerts sent: {len(tg_alerts)}.")
-    print(f"History files: {HISTORY_CSV}, {HISTORY_HTML}. State saved: {STATE_FILE}.")
-
+    print(f"Total warnings: {len(warnings)}; after filters: {len(filtered)}; changed: {len(changed)}; history_added: {len(history_add)}")
 
 if __name__ == "__main__":
     main()
