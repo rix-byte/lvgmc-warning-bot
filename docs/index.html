@@ -1,280 +1,201 @@
 <!doctype html>
 <html lang="lv">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>LVĢMC brīdinājumu arhīvs (bot)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LVGMC brīdinājumu arhīvs</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 18px; }
-    h1 { margin: 0 0 8px 0; font-size: 20px; }
-    .sub { color: #666; margin-bottom: 14px; }
-    .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 14px 0; }
-    input[type="search"] { padding: 10px; min-width: 260px; border: 1px solid #ccc; border-radius: 8px; }
-    select { padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #eee; padding: 10px; vertical-align: top; }
-    th { text-align: left; background: #fafafa; position: sticky; top: 0; z-index: 1; cursor: pointer; }
-    .wrap { white-space: normal; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: nowrap; }
-    .badge { display:inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-    .yellow { background: #fff3b0; }
-    .orange { background: #ffd8a8; }
-    .red { background: #ffc9c9; }
-    .green { background: #d3f9d8; }
-    .gray { background: #e9ecef; }
-    .linkbtn { border: none; background: none; color: #1a73e8; padding: 0; cursor: pointer; font-size: 12px; }
-    .desc-full { margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 8px; }
-    .muted { color: #666; }
-    .footer { margin-top: 14px; color: #666; font-size: 12px; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:#0b1020; color:#e9eeff; }
+    .wrap { max-width:1200px; margin:24px auto 60px; padding:0 16px; }
+    h1 { margin:0; font-size:22px; }
+    .sub { color:#a5b0cf; margin-top:6px; font-size:13px; }
+    .card { margin-top:14px; border:1px solid rgba(255,255,255,.12); border-radius:16px; overflow:hidden; background:rgba(16,26,51,.82); }
+    .toolbar { padding:12px; display:grid; gap:10px; grid-template-columns: 1fr; border-bottom:1px solid rgba(255,255,255,.12); position:sticky; top:0; background:rgba(11,16,32,.75); backdrop-filter: blur(10px); }
+    @media(min-width:900px){ .toolbar { grid-template-columns: 1.4fr .7fr .7fr .7fr; align-items:center; } }
+    input,select { padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.05); color:#e9eeff; }
+    .table-wrap { overflow:auto; max-height:78vh; }
+    table { width:100%; border-collapse:collapse; min-width:1100px; }
+    th,td { padding:12px; border-bottom:1px solid rgba(255,255,255,.07); vertical-align:top; font-size:13px; }
+    th { position:sticky; top:0; background:rgba(16,26,51,.92); color:#a5b0cf; font-size:12px; text-align:left; }
+    .badge { display:inline-block; padding:5px 10px; border-radius:999px; font-weight:800; font-size:12px; border:1px solid rgba(0,0,0,.2); color:#111; }
+    .YELLOW { background:#f5d90a; }
+    .ORANGE { background:#ff8a00; }
+    .RED { background:#ff3b30; color:#fff; }
+    details summary { cursor:pointer; color:#bcd4ff; font-weight:700; }
+    .footer { display:flex; justify-content:space-between; gap:10px; padding:12px 14px; color:#a5b0cf; font-size:12px; border-top:1px solid rgba(255,255,255,.12); flex-wrap:wrap; }
+    .pager { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button { padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.05); color:#e9eeff; cursor:pointer; }
+    button:hover { background:rgba(255,255,255,.10); }
   </style>
 </head>
 <body>
-  <h1>LVĢMC brīdinājumu arhīvs (bot)</h1>
-  <div class="sub">Šī lapa tiek automātiski ģenerēta no <span class="mono">history.csv</span>.</div>
+<div class="wrap">
+  <h1>LVGMC brīdinājumu arhīvs (bot)</h1>
+  <div class="sub">Ģenerēts: <b>2026-01-20 07:25:46 UTC</b> • Avots: history.csv</div>
 
-  <div class="controls">
-    <input id="q" type="search" placeholder="Meklēt (notikums, teritorija, teksts)..." oninput="applyFilters()"/>
-    <select id="lvl" onchange="applyFilters()">
-      <option value="">Visi līmeņi</option>
-      <option value="yellow">Dzeltenais</option>
-      <option value="orange">Oranžais</option>
-      <option value="red">Sarkanais</option>
-      <option value="green">Zaļais</option>
-    </select>
+  <div class="card">
+    <div class="toolbar">
+      <input id="q" placeholder="Meklēt (notikums, teritorija, teksts…)" />
+      <select id="level">
+        <option value="">Visi līmeņi</option>
+        <option value="YELLOW">Dzeltenais</option>
+        <option value="ORANGE">Oranžais</option>
+        <option value="RED">Sarkanais</option>
+      </select>
+      <select id="hazard"><option value="">Visas parādības</option></select>
+      <select id="pageSize">
+        <option value="25">25 / lapa</option>
+        <option value="50" selected>50 / lapa</option>
+        <option value="100">100 / lapa</option>
+        <option value="0">Visi</option>
+      </select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Atklāts (UTC)</th>
+            <th>Krāsa</th>
+            <th>Notikums</th>
+            <th>Parādība</th>
+            <th>Teritorija</th>
+            <th>Spēkā</th>
+            <th>Teksts</th>
+            <th>Avots</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="footer">
+      <div id="count">Rādīti ieraksti: 0 / 0</div>
+      <div class="pager">
+        <button id="prev">◀</button>
+        <span id="pageInfo">Lapa 1</span>
+        <button id="next">▶</button>
+      </div>
+    </div>
   </div>
-
-  <div class="muted" id="count"></div>
-
-  <table id="t">
-    <thead>
-      <tr>
-        <th onclick="sortTable(0)">Atklāts (UTC)</th>
-        <th onclick="sortTable(1)">Krāsa</th>
-        <th onclick="sortTable(2)">Notikums</th>
-        <th onclick="sortTable(3)">Parādība</th>
-        <th onclick="sortTable(4)">Teritorija</th>
-        <th onclick="sortTable(5)">Spēkā</th>
-        <th>Brīdinājuma teksts</th>
-        <th>Avots</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais sala brīdinājums</td>
-  <td class="wrap">low-temperature</td>
-  <td class="wrap">Cēsu novads, Krāslavas novads, Preiļu novads, Smiltenes novads, Ludzas novads, Alūksnes novads, Līvānu novads, Madonas novads, Jēkabpils novads, Valkas novads, Augšdaugavas novads, Balvu novads, Rēzeknes novads, Aizkraukles novads, Valmieras novads, Gulbenes novads</td>
-  <td class="mono">2026-01-19T20:00:00+03:00 → 2026-01-20T08:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">19.-20.01.2026. naktī Latvijas austrumu rajonos gaidāms stiprs sals - gaisa temperatūra pazemināsies līdz -20...-22º. ESI INFORMĒTS, ka gaidāms stiprs sals! Sti…</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_0', this)">Rādīt/Slēpt</button>
-    <div id="desc_0" class="desc-full" style="display:none;">19.-20.01.2026. naktī Latvijas austrumu rajonos gaidāms stiprs sals - gaisa temperatūra pazemināsies līdz -20...-22º. ESI INFORMĒTS, ka gaidāms stiprs sals! Stipra sala laikā pastāv veselības traucējumu risks atsevišķām iedzīvotāju grupām, piemēram, gados vecākiem cilvēkiem un zīdaiņiem, arī bezpajumtniekiem. Lai izvairītos no ķermeņa atdzišanas un apsaldējumiem, nodrošinies ar salam piemērotu apģērbu, kā arī, atrodoties ārā, izvairies no mazkustības! Pastāv atsevišķu infrastruktūras elementu un transporta kustības traucējumu risks. Mehāniskie transportlīdzekļi var būt neiedarbināmi, var plīst nepietiekami nosiltināti ūdensvadi, kā arī apkures sistēmu paaugstinātas noslodzes dēļ pastāv augstāks uguns nelaimes risks. Sala ietekmē var būt nepieciešams mainīt vai atcelt ieplānotās aktivitātes un darbus, ja tie plānoti ārpus apsildītām telpām! Skolēni vecumā līdz 12 gadu vecumam var neapmeklēt skolu. Plašāk par to, kā rīkoties sala gadījumā, lasi https://www.nmpd.gov.lv/lv/bistams-aukstums !</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais miglas brīdinājums</td>
-  <td class="wrap">Fog</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-18T01:00:00+03:00 → 2026-01-18T11:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">18.-19.01.2026. nakts vidū vietām ir izveidojusies migla ar redzamību 500-1000 m, kas saglabāsies līdz rītam.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_1', this)">Rādīt/Slēpt</button>
-    <div id="desc_1" class="desc-full" style="display:none;">18.-19.01.2026. nakts vidū vietām ir izveidojusies migla ar redzamību 500-1000 m, kas saglabāsies līdz rītam.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa</td>
-  <td class="mono">2026-01-16T20:00:00+03:00 → 2026-01-17T07:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">17.01.2026. no rīta dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_2', this)">Rādīt/Slēpt</button>
-    <div id="desc_2" class="desc-full" style="display:none;">17.01.2026. no rīta dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-15T23:00:00+03:00 → 2026-01-17T06:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">17.01.2026. no rīta dienvidu, dienvidaustrumu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_3', this)">Rādīt/Slēpt</button>
-    <div id="desc_3" class="desc-full" style="display:none;">17.01.2026. no rīta dienvidu, dienvidaustrumu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa</td>
-  <td class="mono">2026-01-16T20:00:00+03:00 → 2026-01-17T07:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_4', this)">Rādīt/Slēpt</button>
-    <div id="desc_4" class="desc-full" style="display:none;">16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa</td>
-  <td class="mono">2026-01-16T20:00:00+03:00 → 2026-01-17T02:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_5', this)">Rādīt/Slēpt</button>
-    <div id="desc_5" class="desc-full" style="display:none;">16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa</td>
-  <td class="mono">2026-01-16T09:00:00+03:00 → 2026-01-17T08:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">16.01.2026. priekšpusdienā dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_6', this)">Rādīt/Slēpt</button>
-    <div id="desc_6" class="desc-full" style="display:none;">16.01.2026. priekšpusdienā dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-15T23:00:00+03:00 → 2026-01-17T02:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_7', this)">Rādīt/Slēpt</button>
-    <div id="desc_7" class="desc-full" style="display:none;">16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-15T23:00:00+03:00 → 2026-01-17T05:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_8', this)">Rādīt/Slēpt</button>
-    <div id="desc_8" class="desc-full" style="display:none;">16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-15T23:00:00+03:00 → 2026-01-17T05:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">15.-16.01.2026. nakts vidū dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_9', this)">Rādīt/Slēpt</button>
-    <div id="desc_9" class="desc-full" style="display:none;">15.-16.01.2026. nakts vidū dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa</td>
-  <td class="mono">2026-01-14T10:00:00+03:00 → 2026-01-15T14:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">14.-15.01.2026. naktī dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās līdz 15-20 m/s. Viļņu augstums 1.5-2.5 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_10', this)">Rādīt/Slēpt</button>
-    <div id="desc_10" class="desc-full" style="display:none;">14.-15.01.2026. naktī dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās līdz 15-20 m/s. Viļņu augstums 1.5-2.5 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-<tr data-level="yellow">
-  <td class="mono">2026-01-19T12:35:16.781023Z</td>
-  <td><span class="badge yellow">Dzeltenais</span></td>
-  <td class="wrap">Dzeltenais vēja brīdinājums</td>
-  <td class="wrap">Wind</td>
-  <td class="wrap">Baltijas jūras centrālā daļa</td>
-  <td class="mono">2026-01-13T21:00:00+03:00 → 2026-01-15T04:00:00+03:00</td>
-  <td class="wrap">
-    <div class="desc-short">14.-15.01.2026. naktī dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15-18 m/s. Viļņu augstums 2.0-3.0 m.</div>
-    <button class="linkbtn" onclick="toggleDesc('desc_11', this)">Rādīt/Slēpt</button>
-    <div id="desc_11" class="desc-full" style="display:none;">14.-15.01.2026. naktī dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15-18 m/s. Viļņu augstums 2.0-3.0 m.</div>
-  </td>
-  <td class="wrap"><a href="https://bridinajumi.meteo.lv/" target="_blank" rel="noopener">Avots</a></td>
-</tr>
-    </tbody>
-  </table>
-
-  <div class="footer">Pēdējā ģenerēšana: 2026-01-19T13:04:16.256610Z</div>
+</div>
 
 <script>
-  function toggleDesc(id, btn) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.style.display = (el.style.display === "none" || el.style.display === "") ? "block" : "none";
+  const ALL = [{"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260114232719.96361", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-13T21:00:00+03:00", "expires": "2026-01-15T04:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "14.-15.01.2026. naktī dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15-18 m/s. Viļņu augstums 2.0-3.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260114232719.96362", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-14T10:00:00+03:00", "expires": "2026-01-15T14:00:00+03:00", "areas": "Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa", "description": "14.-15.01.2026. naktī dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās līdz 15-20 m/s. Viļņu augstums 1.5-2.5 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260115124320.96383", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-15T23:00:00+03:00", "expires": "2026-01-17T05:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "15.-16.01.2026. nakts vidū dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260116073119.96421", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-15T23:00:00+03:00", "expires": "2026-01-17T05:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260116142719.96422", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-15T23:00:00+03:00", "expires": "2026-01-17T02:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "16.01.2026. dienā dienvidu, dienvidaustrumu vējš saglabāsies brāzmās 15-19 m/s. Viļņu augstums 2.0-3.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260116155318.96423", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-16T09:00:00+03:00", "expires": "2026-01-17T08:00:00+03:00", "areas": "Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa", "description": "16.01.2026. priekšpusdienā dienvidu, dienvidaustrumu vējš pastiprināsies brāzmās 15-19 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260116195720.96441", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-16T20:00:00+03:00", "expires": "2026-01-17T02:00:00+03:00", "areas": "Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa", "description": "16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260117030719.96461", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-16T20:00:00+03:00", "expires": "2026-01-17T07:00:00+03:00", "areas": "Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa", "description": "16.01.2026. tuvākajās 1-3 stundās dienvidaustrumu, dienvidu vējš pastiprināsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260117064919.96464", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-15T23:00:00+03:00", "expires": "2026-01-17T06:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "17.01.2026. no rīta dienvidu, dienvidaustrumu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260117064919.96465", "event": "Dzeltenais vēja brīdinājums", "level": "yellow", "hazard": "Wind", "onset": "2026-01-16T20:00:00+03:00", "expires": "2026-01-17T07:00:00+03:00", "areas": "Rīgas līča dienvidu daļa, Rīgas līča austrumu daļa, Rīgas līča rietumu daļa", "description": "17.01.2026. no rīta dienvidaustrumu, dienvidu vējš saglabāsies brāzmās līdz 15 m/s. Viļņu augstums 1.0-2.0 m.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260118100718.96482", "event": "Dzeltenais miglas brīdinājums", "level": "yellow", "hazard": "Fog", "onset": "2026-01-18T01:00:00+03:00", "expires": "2026-01-18T11:00:00+03:00", "areas": "Baltijas jūras centrālā daļa", "description": "18.-19.01.2026. nakts vidū vietām ir izveidojusies migla ar redzamību 500-1000 m, kas saglabāsies līdz rītam.", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-19T12:35:16.781023Z", "identifier": "2.49.0.0.428.0.LV.260119131919.96501", "event": "Dzeltenais sala brīdinājums", "level": "yellow", "hazard": "low-temperature", "onset": "2026-01-19T20:00:00+03:00", "expires": "2026-01-20T08:00:00+03:00", "areas": "Cēsu novads, Krāslavas novads, Preiļu novads, Smiltenes novads, Ludzas novads, Alūksnes novads, Līvānu novads, Madonas novads, Jēkabpils novads, Valkas novads, Augšdaugavas novads, Balvu novads, Rēzeknes novads, Aizkraukles novads, Valmieras novads, Gulbenes novads", "description": "19.-20.01.2026. naktī Latvijas austrumu rajonos gaidāms stiprs sals - gaisa temperatūra pazemināsies līdz -20...-22º. ESI INFORMĒTS, ka gaidāms stiprs sals! Stipra sala laikā pastāv veselības traucējumu risks atsevišķām iedzīvotāju grupām, piemēram, gados vecākiem cilvēkiem un zīdaiņiem, arī bezpajumtniekiem. Lai izvairītos no ķermeņa atdzišanas un apsaldējumiem, nodrošinies ar salam piemērotu apģērbu, kā arī, atrodoties ārā, izvairies no mazkustības! Pastāv atsevišķu infrastruktūras elementu un transporta kustības traucējumu risks. Mehāniskie transportlīdzekļi var būt neiedarbināmi, var plīst nepietiekami nosiltināti ūdensvadi, kā arī apkures sistēmu paaugstinātas noslodzes dēļ pastāv augstāks uguns nelaimes risks. Sala ietekmē var būt nepieciešams mainīt vai atcelt ieplānotās aktivitātes un darbus, ja tie plānoti ārpus apsildītām telpām! Skolēni vecumā līdz 12 gadu vecumam var neapmeklēt skolu. Plašāk par to, kā rīkoties sala gadījumā, lasi https://www.nmpd.gov.lv/lv/bistams-aukstums !", "source": "https://bridinajumi.meteo.lv/"}, {"timestamp_utc": "2026-01-20T07:25:44Z", "identifier": "--", "event": "", "level": "", "hazard": "", "onset": "", "expires": "", "areas": "", "description": "", "source": "https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/"}];
+
+  const els = {
+    q: document.getElementById('q'),
+    level: document.getElementById('level'),
+    hazard: document.getElementById('hazard'),
+    pageSize: document.getElementById('pageSize'),
+    tbody: document.getElementById('tbody'),
+    count: document.getElementById('count'),
+    prev: document.getElementById('prev'),
+    next: document.getElementById('next'),
+    pageInfo: document.getElementById('pageInfo'),
+  };
+
+  function uniq(arr) {
+    const s = new Set();
+    arr.forEach(v => { if (v && v.trim()) s.add(v); });
+    return Array.from(s).sort((a,b)=>a.localeCompare(b));
   }
 
-  function applyFilters() {
-    const q = (document.getElementById("q").value || "").toLowerCase();
-    const lvl = (document.getElementById("lvl").value || "").toLowerCase();
-    const rows = document.querySelectorAll("#t tbody tr");
-    let shown = 0;
-    for (const r of rows) {
-      const rowLvl = (r.getAttribute("data-level") || "");
-      if (lvl && rowLvl !== lvl) {
-        r.style.display = "none";
-        continue;
-      }
-      const text = r.innerText.toLowerCase();
-      const ok = !q || text.includes(q);
-      r.style.display = ok ? "" : "none";
-      if (ok) shown++;
-    }
-    document.getElementById("count").innerText = `Rādīti ieraksti: ${{shown}} / ${{rows.length}}`;
-  }
-
-  let sortDir = 1;
-  function sortTable(col) {
-    const tbody = document.querySelector("#t tbody");
-    const rows = Array.from(tbody.querySelectorAll("tr"));
-    sortDir = -sortDir;
-    rows.sort((a, b) => {
-      const ta = a.children[col].innerText.trim();
-      const tb = b.children[col].innerText.trim();
-      if (ta < tb) return -1 * sortDir;
-      if (ta > tb) return  1 * sortDir;
-      return 0;
+  function initHazards() {
+    uniq(ALL.map(r => r.hazard || '')).forEach(v => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      els.hazard.appendChild(o);
     });
-    for (const r of rows) tbody.appendChild(r);
-    applyFilters();
   }
 
-  applyFilters();
+  function badge(level) {
+    const L = (level || '').toUpperCase();
+    let label = L;
+    if (L === 'YELLOW') label = 'Dzeltenais';
+    else if (L === 'ORANGE') label = 'Oranžais';
+    else if (L === 'RED') label = 'Sarkanais';
+    return '<span class="badge ' + L + '">' + label + '</span>';
+  }
+
+  function textMatch(r, q) {
+    if (!q) return true;
+    const hay = ((r.event||'')+' '+(r.hazard||'')+' '+(r.areas||'')+' '+(r.description||'')).toLowerCase();
+    return hay.includes(q.toLowerCase());
+  }
+
+  function filtered() {
+    const q = els.q.value.trim();
+    const L = els.level.value.trim();
+    const H = els.hazard.value.trim();
+    return ALL.filter(r => {
+      if (L && (r.level||'').toUpperCase() !== L) return false;
+      if (H && (r.hazard||'') !== H) return false;
+      if (!textMatch(r, q)) return false;
+      return true;
+    });
+  }
+
+  function esc(s) {
+    return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  }
+
+  let page = 1;
+
+  function render() {
+    const rows = filtered().sort((a,b)=>(b.timestamp_utc||'').localeCompare(a.timestamp_utc||''));
+    const total = rows.length;
+
+    const ps = parseInt(els.pageSize.value, 10);
+    let pages = 1, start = 0, end = total;
+    if (ps > 0) {
+      pages = Math.max(1, Math.ceil(total / ps));
+      page = Math.min(page, pages);
+      start = (page - 1) * ps;
+      end = Math.min(total, start + ps);
+    } else {
+      page = 1; pages = 1;
+    }
+
+    const shown = rows.slice(start, end);
+
+    els.tbody.innerHTML = shown.map(r => {
+      const src = r.source ? '<a href="'+esc(r.source)+'" target="_blank" rel="noreferrer">Avots</a>' : '';
+      const per = (r.onset||'') + ' → ' + (r.expires||'');
+      return (
+        '<tr>'
+        + '<td>' + esc(r.timestamp_utc||'') + '</td>'
+        + '<td>' + badge(r.level||'') + '</td>'
+        + '<td>' + esc(r.event||'') + '</td>'
+        + '<td>' + esc(r.hazard||'') + '</td>'
+        + '<td>' + esc(r.areas||'') + '</td>'
+        + '<td>' + esc(per) + '</td>'
+        + '<td><details><summary>Rādīt</summary><div class="desc">' + esc(r.description||'') + '</div></details></td>'
+        + '<td>' + src + '</td>'
+        + '</tr>'
+      );
+    }).join('');
+
+    els.count.textContent = 'Rādīti ieraksti: ' + shown.length + ' / ' + total;
+    els.pageInfo.textContent = 'Lapa ' + page + ' / ' + pages;
+    els.prev.disabled = (page <= 1);
+    els.next.disabled = (page >= pages);
+  }
+
+  function reset() { page = 1; render(); }
+
+  ['input','change'].forEach(ev => {
+    els.q.addEventListener(ev, reset);
+    els.level.addEventListener(ev, reset);
+    els.hazard.addEventListener(ev, reset);
+    els.pageSize.addEventListener(ev, reset);
+  });
+
+  els.prev.addEventListener('click', () => { page = Math.max(1, page-1); render(); });
+  els.next.addEventListener('click', () => { page = page+1; render(); });
+
+  initHazards();
+  render();
 </script>
 </body>
 </html>
