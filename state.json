@@ -12,8 +12,8 @@
     "2.49.0.0.428.0.LV.260117064919.96465": "489634b7d60dab95a5a87d963e9dc67b0938f13ece892489b0d963c867d5e90d",
     "2.49.0.0.428.0.LV.260118100718.96482": "08c6e8071e8bbb1fbacf843f2ab721def8bca7cc2810e901b7aacf831d41394f",
     "2.49.0.0.428.0.LV.260119131919.96501": "dcfc9f9e49a27a2d2c93d0eae89eb3888d1a4cf0bca1ce16b0d91db9efe98af3",
-    "--": "{\"areas\": \"\", \"description\": \"\", \"event\": \"\", \"expires\": \"\", \"hazard\": \"\", \"identifier\": \"--\", \"level\": \"\", \"onset\": \"\", \"source\": \"https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/\", \"timestamp_utc\": \"2026-01-21T07:56:14Z\"}"
+    "--": "{\"areas\": \"\", \"description\": \"\", \"event\": \"\", \"expires\": \"\", \"hazard\": \"\", \"identifier\": \"--\", \"level\": \"\", \"onset\": \"\", \"source\": \"https://feeds.meteoalarm.org/api/v1/warnings/feeds-latvia/\", \"timestamp_utc\": \"2026-01-21T09:02:33Z\"}"
   },
   "updated_at": "2026-01-19T13:04:16.256784Z",
-  "last_run": "2026-01-21T07:56:15Z"
+  "last_run": "2026-01-21T09:02:34Z"
 }
